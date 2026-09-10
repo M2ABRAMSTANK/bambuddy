@@ -41,7 +41,7 @@ def _resolve_pool_kwargs() -> dict:
         server-dropped connections instead of erroring the request) and
         ``pool_recycle`` 1800s. The old hard-coded 10 + 20 exhausted on large
         farms while printer callbacks held connections.
-      - SQLite: pool_size 10 + max_overflow 20 (lowered from 20 + 200, #2883:
+      - SQLite: pool_size 10 + max_overflow 90 (lowered from 20 + 200, #2883:
         WAL parks one main-db fd per closed overflow connection, so the old
         ceiling could strand ~220 fds against a 1024 nofile default); no
         pre-ping / recycle — the connection is a local file, not a server
@@ -64,11 +64,13 @@ def _resolve_pool_kwargs() -> dict:
         # a long-running process in that state has been observed to end in
         # "database disk image is malformed" (see issue: fd-exhaustion →
         # 44h of failed opens alongside live writers → page corruption).
-        # 10+20 keeps SQLite honest for a single-file DB while capping the
-        # parked-fd bound at ~30; farms needing more concurrency should be
-        # on PostgreSQL anyway (#2641). Both knobs stay env-overridable.
+        # 10+90 caps the parked-fd bound at ~100 — about a tenth of the 1024
+        # default budget — while keeping roughly 3x margin over the 10+20
+        # concurrency that #2572 showed a 93-printer farm saturating; farms
+        # needing more should be on PostgreSQL anyway (#2641). Both knobs
+        # stay env-overridable.
         pool_size = settings.db_pool_size if settings.db_pool_size is not None else 10
-        max_overflow = settings.db_max_overflow if settings.db_max_overflow is not None else 20
+        max_overflow = settings.db_max_overflow if settings.db_max_overflow is not None else 90
         kwargs = {"pool_size": pool_size, "max_overflow": max_overflow}
     else:
         pool_size = settings.db_pool_size if settings.db_pool_size is not None else 20
