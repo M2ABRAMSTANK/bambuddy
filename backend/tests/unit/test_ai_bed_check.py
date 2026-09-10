@@ -710,12 +710,25 @@ class TestDeadline:
             client_calls.append(kwargs)
             return _mock_client(post_result=resp)
 
+        # 1st call = start = time.monotonic() in _analyze_frame_ai; 2nd call =
+        # inside _timeout() for the single request issued (3.0s elapsed out
+        # of a 10.0s budget leaves 7.0s). A plain list side_effect would
+        # StopIteration here: patching `bedcheck_ai.time.monotonic` patches
+        # the real time module's attribute (bedcheck_ai.time IS the time
+        # module), so asyncio.wait_for's own internal loop.time() calls draw
+        # from the same iterator too -- a function with a stable fallback
+        # keeps those extra, assertion-irrelevant calls from crashing.
+        values = iter([0.0, 3.0])
+
+        def _fake_monotonic():
+            try:
+                return next(values)
+            except StopIteration:
+                return 3.0
+
         with (
             _patch_settings(),
-            # 1st call = start = time.monotonic() in _analyze_frame_ai;
-            # 2nd call = inside _timeout() for the single request issued.
-            # 3.0s elapsed out of a 10.0s budget leaves 7.0s.
-            patch("backend.app.services.bedcheck_ai.time.monotonic", side_effect=[0.0, 3.0]),
+            patch("backend.app.services.bedcheck_ai.time.monotonic", side_effect=_fake_monotonic),
             patch("backend.app.services.bedcheck_ai.httpx.AsyncClient", side_effect=_client_factory),
         ):
             await _analyze_frame_ai(FAKE_JPEG, printer_id=1, deadline_seconds=10.0)
@@ -802,6 +815,66 @@ class TestDeadlineExhaustionAndDispatch:
             await _analyze_frame_ai(FAKE_JPEG, printer_id=1, deadline_seconds=20.0)
 
         assert client.post.await_count == 0
+
+    @pytest.mark.asyncio
+    async def test_timeout_exactly_zero_remaining_raises_deadline_exceeded(self):
+        """Coverage for the `<= 0` boundary in _timeout() itself (the test
+        above only exercises an already-negative remaining budget). A mutant
+        that weakened this to `< 0` would let remaining == 0.0 slip through
+        and hand httpx (and now asyncio.wait_for) a zero-second timeout
+        instead of failing the deadline outright before issuing anything."""
+        values = iter([0.0, 20.0])
+
+        def _fake_monotonic():
+            try:
+                return next(values)
+            except StopIteration:
+                return 20.0
+
+        client = _mock_client(
+            post_result=_mock_200_response(
+                {"choices": [{"message": {"content": '{"is_empty": true, "confidence": 0.9, "reason": ""}'}}]}
+            )
+        )
+        with (
+            _patch_settings(),
+            patch("backend.app.services.bedcheck_ai.time.monotonic", side_effect=_fake_monotonic),
+            patch("backend.app.services.bedcheck_ai.httpx.AsyncClient", return_value=client),
+            pytest.raises(AiBedCheckError, match="deadline exceeded"),
+        ):
+            await _analyze_frame_ai(FAKE_JPEG, printer_id=1, deadline_seconds=20.0)
+
+        assert client.post.await_count == 0
+
+    @pytest.mark.asyncio
+    async def test_deadline_bounds_a_drip_feeding_backend_to_the_total_budget(self):
+        """Item 1 (aggregate wall-clock bound): a bare httpx.Timeout only
+        bounds idle time between reads, not the call as a whole, so a
+        backend that trickles bytes just often enough to keep resetting the
+        read timer could otherwise run 2-3x the deadline before ever
+        tripping it. _analyze_frame_ai additionally wraps the deadline-path
+        request in asyncio.wait_for() against the same remaining budget, so
+        a _post_chat that simply never returns in time must still fail open
+        promptly. Red-proof: removing that asyncio.wait_for() wrapper makes
+        this hang for the full 5s sleep below instead of returning near the
+        0.2s deadline.
+        """
+
+        async def _drip_feeding_post_chat(*_args, **_kwargs):
+            await asyncio.sleep(5.0)
+            return '{"is_empty": true, "confidence": 0.9, "reason": ""}'  # pragma: no cover - never reached
+
+        with (
+            _patch_settings(),
+            patch("backend.app.services.bedcheck_ai._post_chat", AsyncMock(side_effect=_drip_feeding_post_chat)),
+            patch("backend.app.services.bedcheck_ai._dispatch_unavailable_transition", MagicMock()),
+        ):
+            start = time.monotonic()
+            result = await check_bed_ai(63, FAKE_JPEG, "built-in", deadline_seconds=0.2)
+            elapsed = time.monotonic() - start
+
+        assert result.outcome == "unavailable"
+        assert elapsed < 1.0
 
     @pytest.mark.asyncio
     async def test_exhausted_deadline_fails_open_with_the_default_request_mode(self):
@@ -1106,6 +1179,11 @@ class TestShapeCacheKeyNormalization:
         canonical = _shape_cache_key(CONFIGURED_URL, "qwen2.5vl:7b", "key")
         assert _shape_cache_key(CONFIGURED_URL + "/", " qwen2.5vl:7b ", " key ") == canonical
         assert _shape_cache_key(CONFIGURED_URL + "///", "qwen2.5vl:7b", "key") == canonical
+        # Whitespace-padded base_url (not just model/api_key) must normalize
+        # too -- kills a mutant that drops the .strip() call ahead of the
+        # rstrip("/") on base_url in _shape_cache_key.
+        assert _shape_cache_key(f"  {CONFIGURED_URL}  ", "qwen2.5vl:7b", "key") == canonical
+        assert _shape_cache_key(f"  {CONFIGURED_URL}/  ", "qwen2.5vl:7b", "key") == canonical
 
     def test_key_includes_the_api_key_hash(self):
         """A key rotation on the same URL/model must not reuse the shape
@@ -1329,6 +1407,33 @@ class TestHealthRegistryAndNotifications:
         assert health[9]["reason"] == "connection failed"
 
     @pytest.mark.asyncio
+    async def test_fail_open_records_request_mode_from_the_shape_out_holder(self):
+        """Item 2: shape_out is filled in by _analyze_frame_ai the moment the
+        request shape is resolved -- BEFORE any network I/O -- specifically so
+        check_bed_ai()'s failure path can label the health entry with the
+        shape actually in play, without a second (out-of-budget) settings
+        read. Seed the cache with the json_object shape, which differs from
+        _DEFAULT_SHAPE, so the assertion actually distinguishes the two: if
+        the two shape_out-fill lines in _analyze_frame_ai were deleted,
+        observed_shape would stay {} and the failure path would fall back to
+        _DEFAULT_SHAPE's "json_schema" instead."""
+        cache_key = bedcheck_ai_module._shape_cache_key(CONFIGURED_URL, "qwen2.5vl:7b", "")
+        bedcheck_ai_module._shape_cache[cache_key] = {
+            "token_param": "max_completion_tokens",
+            "response_mode": "json_object",
+        }
+        with (
+            _patch_settings(),
+            patch(
+                "backend.app.services.bedcheck_ai.httpx.AsyncClient",
+                return_value=_mock_client(post_side_effect=httpx.ConnectError("refused")),
+            ),
+            patch("backend.app.services.bedcheck_ai._dispatch_unavailable_transition", MagicMock()),
+        ):
+            await check_bed_ai(64, FAKE_JPEG, "built-in")
+        assert get_health()[64]["request_mode"] == "json_object"
+
+    @pytest.mark.asyncio
     async def test_ok_to_unavailable_sends_exactly_one_notification(self):
         mock_notify_service = MagicMock()
         mock_notify_service.on_printer_error = AsyncMock()
@@ -1546,3 +1651,43 @@ class TestHealthRegistryAndNotifications:
             await _drain_notification_tasks()
 
         mock_notify_service.on_printer_error.assert_awaited_once()
+
+
+class TestDispatchWithNoRunningLoop:
+    """Item 3: asyncio.create_task() constructs its coroutine argument BEFORE
+    calling asyncio.get_running_loop() to schedule it, so a RuntimeError from
+    that call (no running loop -- only reachable from sync test/CLI contexts)
+    still leaves a real, never-awaited coroutine object behind unless it is
+    closed explicitly."""
+
+    def test_no_running_loop_closes_the_coroutine(self):
+        """Asserts close() is actually called on the constructed coroutine
+        when asyncio.create_task() raises RuntimeError (no running loop).
+
+        Uses a substitute object returned by a patched
+        _maybe_notify_unavailable_transition rather than a real coroutine +
+        gc-based "was never awaited" warning detection: unittest.mock
+        records call arguments on the patched asyncio.create_task, which
+        keeps a live reference to the real coroutine object for the
+        lifetime of the `with patch(...)` block and masks the refcount drop
+        a gc.collect()-based assertion would rely on -- i.e. that style of
+        test passes whether or not `coro.close()` is actually called, which
+        defeats the point of a red-proof. Asserting close() was invoked is
+        deterministic and directly proves the fix. Red-proof: deleting the
+        `coro.close()` line in _dispatch_unavailable_transition's except
+        branch makes this fail with close.assert_called_once() unsatisfied.
+        """
+        fake_coro = MagicMock(name="fake_notify_coroutine")
+        with (
+            patch(
+                "backend.app.services.bedcheck_ai._maybe_notify_unavailable_transition",
+                MagicMock(return_value=fake_coro),
+            ),
+            patch(
+                "backend.app.services.bedcheck_ai.asyncio.create_task",
+                side_effect=RuntimeError("no running event loop"),
+            ),
+        ):
+            bedcheck_ai_module._dispatch_unavailable_transition(99, "ok", "connection failed")
+
+        fake_coro.close.assert_called_once()

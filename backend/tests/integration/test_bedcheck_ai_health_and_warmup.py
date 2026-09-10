@@ -191,3 +191,42 @@ class TestBedcheckAiSettingsHealthReset:
             assert bedcheck_ai.get_health()[78]["outcome"] == "ok"
         finally:
             bedcheck_ai._last_outcome.pop(78, None)
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_flipping_backend_from_ai_to_opencv_clears_health_without_warming(
+        self, async_client: AsyncClient, monkeypatch
+    ):
+        """Item 5b: the reset above is gated on `bedcheck_ai_changed` (ANY of
+        base_url/model/api_key/backend actually changing), not on
+        `bedcheck_ai_warmup_needed` -- so switching the backend AWAY from
+        'ai' must still drop the stale health entry even though there is
+        correctly no reason to warm a vision model nobody is about to call."""
+        from backend.app.services import bedcheck_ai
+
+        warmup_mock = AsyncMock()
+        monkeypatch.setattr(bedcheck_ai, "warmup", warmup_mock)
+
+        # Establish backend='ai' as the stored value so the follow-up PUT to
+        # 'opencv' below is a real transition, not a no-op re-save.
+        first = await async_client.put("/api/v1/settings/", json={"bedcheck_backend": "ai"})
+        assert first.status_code == 200
+        for _ in range(5):
+            await asyncio.sleep(0)
+        warmup_mock.reset_mock()
+
+        bedcheck_ai._record_outcome(81, "unavailable", "connection failed", "json_schema")
+        bedcheck_ai._last_unavailable_notified_at[81] = 1.0
+        try:
+            response = await async_client.put("/api/v1/settings/", json={"bedcheck_backend": "opencv"})
+            assert response.status_code == 200
+
+            assert bedcheck_ai.get_health() == {}
+            assert bedcheck_ai._last_unavailable_notified_at == {}
+
+            for _ in range(5):
+                await asyncio.sleep(0)
+            warmup_mock.assert_not_awaited()
+        finally:
+            bedcheck_ai._last_outcome.pop(81, None)
+            bedcheck_ai._last_unavailable_notified_at.pop(81, None)

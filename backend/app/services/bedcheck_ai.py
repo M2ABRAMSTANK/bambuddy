@@ -348,11 +348,20 @@ async def _post_chat(
     }
     # httpx applies a bare float timeout to EACH of connect/read/write/pool
     # independently, so a `timeout` meant as a wall-clock budget is really a
-    # 4x worst case. Spell the phases out so the budget means what the
-    # deadline path (see _analyze_frame_ai._timeout) assumes: no single phase
-    # may exceed it, and connect -- which on a reachable LAN service is
-    # sub-millisecond -- is capped far tighter so a black-holed host fails
-    # fast instead of burning the whole budget before a byte is sent.
+    # 4x worst case. Spell the phases out so no single phase may exceed it,
+    # and connect -- which on a reachable LAN service is sub-millisecond --
+    # is capped far tighter so a black-holed host fails fast instead of
+    # burning the whole budget before a byte is sent.
+    #
+    # This alone is still NOT a total-call bound: httpx's read timeout is
+    # idle-time-since-the-last-byte, not a ceiling on the call as a whole, so
+    # a backend that trickles a byte or two just often enough to keep
+    # resetting it could run this request for multiples of `timeout` before
+    # a plain httpx.Timeout ever fires. The deadline path (see
+    # _analyze_frame_ai) additionally wraps its call to this function in
+    # asyncio.wait_for(), which enforces a real wall-clock ceiling regardless
+    # of read-idle resets -- that is what makes deadline_seconds an actual
+    # TOTAL budget rather than merely a per-phase one.
     timeout_config = httpx.Timeout(timeout, connect=min(timeout, CONNECT_TIMEOUT_CAP))
     async with httpx.AsyncClient(timeout=timeout_config) as client:
         resp = await client.post(
@@ -393,7 +402,7 @@ async def _load_ai_settings() -> dict:
         rows = {r.key: r.value for r in result.scalars().all()}
 
     return {
-        "base_url": (rows.get("bedcheck_ai_base_url") or "").rstrip("/"),
+        "base_url": (rows.get("bedcheck_ai_base_url") or "").strip().rstrip("/"),
         "model": (rows.get("bedcheck_ai_model") or "").strip(),
         "api_key": (rows.get("bedcheck_ai_api_key") or "").strip(),
     }
@@ -424,11 +433,16 @@ async def _analyze_frame_ai(
     deadline_seconds, when given, is a TOTAL wall-clock budget for this whole
     call (downscale + request), measured from a time.monotonic() start here --
     NOT a per-request timeout. httpx's timeout is derived as the remaining
-    budget at the moment each request is issued. The one parse/schema retry
-    is also skipped entirely on this path: doubling latency on an already
-    tight safety-path budget is the wrong trade, even though the retry is
-    worth keeping on the diagnostic (manual-check/test-connection) path where
-    deadline_seconds is None.
+    budget at the moment each request is issued, AND (on this path only) the
+    request is additionally wrapped in asyncio.wait_for() against that same
+    remaining budget -- httpx's read timeout only measures idle time between
+    bytes, so a backend that drip-feeds data fast enough to keep resetting it
+    could otherwise run well past the promised total; wait_for is what
+    actually makes "TOTAL" true regardless of that. The one parse/schema
+    retry is also skipped entirely on this path: doubling latency on an
+    already tight safety-path budget is the wrong trade, even though the
+    retry is worth keeping on the diagnostic (manual-check/test-connection)
+    path where deadline_seconds is None.
 
     shape_out, when given, is filled in with {"response_mode": ...} as soon as
     the request shape is resolved -- before any network I/O. It exists so
@@ -463,7 +477,30 @@ async def _analyze_frame_ai(
         return remaining
 
     try:
-        raw = await _post_chat(cfg["base_url"], cfg["model"], cfg["api_key"], messages, timeout=_timeout(), shape=shape)
+        if deadline_seconds is not None:
+            # Resolve the remaining budget exactly once and reuse it for both
+            # the httpx per-phase config and the wait_for ceiling below -- two
+            # separate _timeout() calls would each re-measure elapsed time
+            # (and re-raise "deadline exceeded" independently), needlessly
+            # letting them disagree by however long falls between them.
+            #
+            # See _post_chat's timeout_config comment: a bare httpx.Timeout
+            # bounds each phase but not the call as a whole (read timeout is
+            # idle-time, not total). wait_for against that same budget is the
+            # actual aggregate wall-clock bound -- if it fires,
+            # asyncio.TimeoutError propagates unwrapped and is classified by
+            # _generic_fail_open_reason exactly like an httpx timeout.
+            request_timeout = _timeout()
+            raw = await asyncio.wait_for(
+                _post_chat(
+                    cfg["base_url"], cfg["model"], cfg["api_key"], messages, timeout=request_timeout, shape=shape
+                ),
+                timeout=request_timeout,
+            )
+        else:
+            raw = await _post_chat(
+                cfg["base_url"], cfg["model"], cfg["api_key"], messages, timeout=_timeout(), shape=shape
+            )
         data = _parse_verdict_json(raw)
     except AiBedCheckError:
         if deadline_seconds is not None:
@@ -528,7 +565,12 @@ def _generic_fail_open_reason(e: Exception) -> str:
     deliberately holds error strings behind for exactly this reason. Full
     detail always goes to the logger, never to this string.
     """
-    if isinstance(e, httpx.TimeoutException):
+    if isinstance(e, (httpx.TimeoutException, asyncio.TimeoutError)):
+        # asyncio.TimeoutError is what asyncio.wait_for() raises when the
+        # deadline path's aggregate wall-clock bound (see
+        # _analyze_frame_ai) fires -- classified identically to a plain
+        # httpx per-phase timeout so the user-facing reason doesn't depend
+        # on which of the two guards actually caught the slow backend.
         return "request timed out"
     if isinstance(e, httpx.ConnectError):
         return "connection failed"
@@ -565,11 +607,19 @@ def _dispatch_unavailable_transition(printer_id: int, previous_outcome: str | No
     that is waiting on its verdict. Scheduling it detaches that cost onto the
     event loop.
     """
+    # Bound to a name before the try so the RuntimeError branch can close it:
+    # asyncio.create_task() constructs this coroutine object as its argument
+    # BEFORE calling asyncio.get_running_loop() to schedule it, so a
+    # RuntimeError there (no running loop) still leaves a real,
+    # never-awaited coroutine behind. Left unclosed, Python warns
+    # "coroutine '...' was never awaited" the next time the GC collects it.
+    coro = _maybe_notify_unavailable_transition(printer_id, previous_outcome, reason)
     try:
-        task = asyncio.create_task(_maybe_notify_unavailable_transition(printer_id, previous_outcome, reason))
+        task = asyncio.create_task(coro)
     except RuntimeError:
         # No running loop (only reachable from sync test/CLI contexts) -- the
         # notification is a nicety, never a reason to fail the check.
+        coro.close()
         logger.debug("No running event loop; skipping AI bed-check unavailable notification for %s", printer_id)
         return
     _pending_notify_tasks.add(task)
