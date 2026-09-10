@@ -6692,6 +6692,7 @@ export default {
     testButton: '연결 테스트',
     testSuccess: '백엔드에 연결됨 — {{ms}}ms 만에 판정을 수신했습니다.',
     testFailed: 'AI 백엔드에서 판정을 가져올 수 없습니다.',
+    testRequestMode: '요청 모드: {{mode}}',
     privacyWarning: '이 URL은 로컬 네트워크에 있지 않습니다. 빌드 플레이트 확인이 실행될 때마다 프린터의 카메라 스냅샷이 이 주소로 전송됩니다. 스냅샷을 비공개로 유지하려면 로컬 서버(예: 자체 네트워크의 Ollama)를 사용하거나, 이 엔드포인트를 신뢰한다면 계속 진행하세요.',
     printersTitle: '모니터링 대상 프린터',
     printersHint: '인쇄 시작 전에 어떤 프린터가 빌드 플레이트 확인을 실행하고 각각 어떤 백엔드를 사용하는지 설정합니다.',

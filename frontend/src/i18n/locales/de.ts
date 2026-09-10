@@ -7239,6 +7239,7 @@ export default {
     testButton: 'Verbindung testen',
     testSuccess: 'Backend erreichbar — Ergebnis in {{ms}} ms erhalten.',
     testFailed: 'Vom KI-Backend konnte kein Ergebnis abgerufen werden.',
+    testRequestMode: 'Anfragemodus: {{mode}}',
     privacyWarning: 'Diese URL liegt nicht in Ihrem lokalen Netzwerk. Bei jeder Plattenprüfung werden Kamera-Snapshots Ihres Druckers an diese Adresse gesendet. Verwenden Sie einen lokalen Server (z. B. Ollama im eigenen Netzwerk), damit Ihre Snapshots privat bleiben, oder fahren Sie fort, wenn Sie diesem Endpunkt vertrauen.',
     printersTitle: 'Überwachte Drucker',
     printersHint: 'Welche Drucker vor dem Druckstart die Druckbett-Prüfung ausführen und welches Backend sie jeweils verwenden.',

@@ -7227,6 +7227,7 @@ export default {
     testButton: 'Prova connessione',
     testSuccess: 'Backend raggiungibile — verdetto ricevuto in {{ms}} ms.',
     testFailed: 'Impossibile ottenere un verdetto dal backend IA.',
+    testRequestMode: 'Modalità richiesta: {{mode}}',
     privacyWarning: 'Questo URL non è nella tua rete locale. Gli snapshot della fotocamera della tua stampante verranno inviati a questo indirizzo ogni volta che viene eseguito il controllo del piatto. Usa un server locale (es. Ollama sulla tua rete) per mantenere privati i tuoi snapshot, oppure continua se ti fidi di questo endpoint.',
     printersTitle: 'Stampanti monitorate',
     printersHint: 'Quali stampanti eseguono il controllo del piatto prima della stampa e quale backend usa ciascuna.',

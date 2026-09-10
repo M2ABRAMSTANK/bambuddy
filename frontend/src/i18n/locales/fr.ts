@@ -7228,6 +7228,7 @@ export default {
     testButton: 'Tester la connexion',
     testSuccess: 'Backend joignable — verdict reçu en {{ms}} ms.',
     testFailed: 'Impossible d\'obtenir un verdict du backend IA.',
+    testRequestMode: 'Mode de requête : {{mode}}',
     privacyWarning: 'Cette URL n\'est pas sur votre réseau local. Des captures caméra de votre imprimante seront envoyées à cette adresse à chaque vérification du plateau. Utilisez un serveur local (ex. Ollama sur votre propre réseau) pour garder vos captures privées, ou continuez si vous faites confiance à cet endpoint.',
     printersTitle: 'Imprimantes surveillées',
     printersHint: 'Quelles imprimantes exécutent la vérification du plateau avant impression, et quel backend chacune utilise.',

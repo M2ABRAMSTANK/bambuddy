@@ -7225,6 +7225,7 @@ export default {
     testButton: '測試連線',
     testSuccess: '後端可連線 — 已在 {{ms}} 毫秒內收到判定結果。',
     testFailed: '無法從 AI 後端取得判定結果。',
+    testRequestMode: '請求模式:{{mode}}',
     privacyWarning: '此 URL 不在您的區域網路內。每次執行列印板檢查時,印表機的攝影機快照都會傳送到此位址。請使用本機伺服器(例如您自己網路中的 Ollama)以保護快照隱私,或者在您信任該端點的情況下繼續使用。',
     printersTitle: '受監控的印表機',
     printersHint: '設定哪些印表機在列印開始前執行列印板檢查，以及各自使用哪個後端。',

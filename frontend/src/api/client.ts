@@ -3373,8 +3373,10 @@ export interface BedcheckAiTestConnection {
   latency_ms: number | null;
   verdict: { is_empty: boolean; confidence: number; reason: string } | null;
   // Whether the model call used the strict JSON-schema mode or fell back to
-  // the looser JSON-object mode.
-  request_mode: 'json_schema' | 'json_object';
+  // the looser JSON-object mode. Present on success; the failure branches in
+  // bedcheck_ai.test_connection() return before it's known, so it's absent
+  // (not null) on any failure path.
+  request_mode?: 'json_schema' | 'json_object';
 }
 
 // One printer's most recent AI bed-check outcome, as tracked by the backend

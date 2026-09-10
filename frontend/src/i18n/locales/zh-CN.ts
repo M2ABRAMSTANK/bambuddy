@@ -7225,6 +7225,7 @@ export default {
     testButton: '测试连接',
     testSuccess: '后端可访问 — 已在 {{ms}} 毫秒内收到判定结果。',
     testFailed: '无法从 AI 后端获取判定结果。',
+    testRequestMode: '请求模式:{{mode}}',
     privacyWarning: '此 URL 不在您的局域网内。每次运行打印板检查时,打印机的摄像头快照都会发送到此地址。请使用本地服务器(例如您自己网络中的 Ollama)以保护快照隐私,或者在您信任该端点的情况下继续使用。',
     printersTitle: '受监控的打印机',
     printersHint: '设置哪些打印机在打印开始前执行打印板检查，以及各自使用哪个后端。',

@@ -7227,6 +7227,7 @@ export default {
     testButton: 'Testar conexão',
     testSuccess: 'Backend acessível — veredito recebido em {{ms}}ms.',
     testFailed: 'Não foi possível obter um veredito do backend de IA.',
+    testRequestMode: 'Modo de solicitação: {{mode}}',
     privacyWarning: 'Essa URL não está na sua rede local. Snapshots da câmera da sua impressora serão enviados para esse endereço sempre que a verificação da placa for executada. Use um servidor local (ex.: Ollama na sua própria rede) para manter seus snapshots privados, ou continue se confiar nesse endpoint.',
     printersTitle: 'Impressoras monitoradas',
     printersHint: 'Quais impressoras executam a verificação da mesa antes da impressão e qual backend cada uma usa.',

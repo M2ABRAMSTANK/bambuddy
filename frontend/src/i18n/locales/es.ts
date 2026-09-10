@@ -7247,6 +7247,7 @@ export default {
     testButton: 'Probar conexión',
     testSuccess: 'Backend accesible — veredicto recibido en {{ms}} ms.',
     testFailed: 'No se pudo obtener un veredicto del backend de IA.',
+    testRequestMode: 'Modo de solicitud: {{mode}}',
     privacyWarning: 'Esta URL no está en su red local. Cada vez que se ejecute la comprobación de la cama, se enviarán instantáneas de la cámara de su impresora a esta dirección. Use un servidor local (p. ej. Ollama en su propia red) para mantener sus instantáneas privadas, o continúe si confía en este punto de conexión.',
     printersTitle: 'Impresoras supervisadas',
     printersHint: 'Qué impresoras ejecutan la comprobación de la placa antes de imprimir y qué backend usa cada una.',

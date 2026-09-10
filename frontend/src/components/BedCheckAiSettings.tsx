@@ -9,7 +9,7 @@ import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 import { formatRelativeTime } from '../utils/date';
 
-type TestResult = { ok: boolean; message: string } | null;
+type TestResult = { ok: boolean; message: string; requestMode?: string } | null;
 
 // Informational only -- not a security boundary. Real enforcement of the
 // LAN-vs-remote distinction lives server-side via LAN_SERVICE_URL_SETTINGS /
@@ -156,6 +156,9 @@ export function BedCheckAiSettings() {
         setTestResult({
           ok: true,
           message: t('bedcheckAi.testSuccess', { ms: res.latency_ms ?? '?' }),
+          // Absent on failure paths (see BedcheckAiTestConnection) -- only
+          // ever set here on the success branch.
+          requestMode: res.request_mode,
         });
         // A successful probe is the one non-mount moment worth refreshing the
         // Status card's health badges for — the backend may have just healed.
@@ -171,6 +174,17 @@ export function BedCheckAiSettings() {
   };
 
   const showPrivacyWarning = backend === 'ai' && baseUrl.trim() !== '' && !isLikelyLanUrl(baseUrl);
+
+  // Theme-aware input/select styling, matching EmailSettings/LDAPSettings/
+  // OIDCProviderSettings — bg-bambu-dark-secondary/border-bambu-dark-tertiary
+  // resolve through CSS variables (see index.css) so they render correctly in
+  // both themes, unlike the literal bg-gray-800/border-gray-700 this card
+  // used to hardcode (dark-only, unreadable against a light card).
+  const fieldClasses =
+    'px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray text-sm focus:outline-none focus:ring-2 focus:ring-bambu-green/50 focus:border-bambu-green transition-colors';
+  const inputClasses = `w-full ${fieldClasses}`;
+  const compactSelectClasses =
+    'bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded px-2 py-1 text-white text-sm focus:outline-none focus:ring-2 focus:ring-bambu-green/50 focus:border-bambu-green transition-colors';
 
   return (
     // Two-column responsive layout, matching FailureDetectionSettings: config +
@@ -192,7 +206,7 @@ export function BedCheckAiSettings() {
           <select
             value={backend}
             onChange={(e) => setBackend(e.target.value as 'opencv' | 'ai')}
-            className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-white text-sm"
+            className={inputClasses}
           >
             <option value="opencv">{t('bedcheckAi.backendOpencv')}</option>
             <option value="ai">{t('bedcheckAi.backendAi')}</option>
@@ -210,7 +224,7 @@ export function BedCheckAiSettings() {
                   value={baseUrl}
                   onChange={(e) => setBaseUrl(e.target.value)}
                   placeholder="http://192.168.1.20:11434/v1"
-                  className="flex-1 bg-gray-800 border border-gray-700 rounded px-3 py-2 text-white text-sm"
+                  className={`flex-1 ${fieldClasses}`}
                 />
                 <Button
                   onClick={handleTest}
@@ -230,7 +244,7 @@ export function BedCheckAiSettings() {
                 value={model}
                 onChange={(e) => setModel(e.target.value)}
                 placeholder="qwen2.5vl:7b"
-                className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-white text-sm"
+                className={inputClasses}
               />
               <p className="text-xs text-bambu-gray mt-1">{t('bedcheckAi.modelHint')}</p>
             </div>
@@ -243,7 +257,7 @@ export function BedCheckAiSettings() {
                 onChange={(e) => setApiKey(e.target.value)}
                 autoComplete="off"
                 placeholder={t('bedcheckAi.apiKeyPlaceholder')}
-                className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-white text-sm"
+                className={inputClasses}
               />
               <p className="text-xs text-bambu-gray mt-1">{t('bedcheckAi.apiKeyHint')}</p>
             </div>
@@ -255,7 +269,16 @@ export function BedCheckAiSettings() {
                 }`}
               >
                 {testResult.ok ? <Check className="w-4 h-4 mt-0.5" /> : <X className="w-4 h-4 mt-0.5" />}
-                <span>{testResult.message}</span>
+                <div>
+                  <div>{testResult.message}</div>
+                  {testResult.ok && testResult.requestMode && (
+                    <div className="text-xs text-bambu-gray mt-0.5">
+                      {t('bedcheckAi.testRequestMode', { mode: testResult.requestMode })}
+                      {testResult.requestMode === 'json_object' &&
+                        ` ${t('printers.plateDetection.decision.degradedNote')}`}
+                    </div>
+                  )}
+                </div>
               </div>
             )}
 
@@ -309,7 +332,7 @@ export function BedCheckAiSettings() {
                       },
                     })
                   }
-                  className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white text-sm"
+                  className={compactSelectClasses}
                 >
                   <option value="">{t('bedcheckAi.useGlobal', { backend: backend === 'ai' ? t('bedcheckAi.backendAi') : t('bedcheckAi.backendOpencv') })}</option>
                   <option value="opencv">{t('bedcheckAi.backendOpencv')}</option>

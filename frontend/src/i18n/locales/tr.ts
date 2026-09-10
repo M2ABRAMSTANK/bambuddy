@@ -7178,6 +7178,7 @@ export default {
     testButton: 'Bağlantıyı test et',
     testSuccess: 'Arka uca ulaşıldı — sonuç {{ms}}ms içinde alındı.',
     testFailed: 'AI arka ucundan sonuç alınamadı.',
+    testRequestMode: 'İstek modu: {{mode}}',
     privacyWarning: 'Bu URL yerel ağınızda değil. Baskı plakası kontrolü her çalıştığında yazıcınızın kamera anlık görüntüleri bu adrese gönderilir. Anlık görüntülerinizi gizli tutmak için yerel bir sunucu kullanın (örn. kendi ağınızdaki Ollama) veya bu uç noktaya güveniyorsanız devam edin.',
     printersTitle: 'İzlenen yazıcılar',
     printersHint: 'Baskı başlamadan önce hangi yazıcıların tabla kontrolünü çalıştıracağını ve her birinin hangi arka ucu kullanacağını belirler.',

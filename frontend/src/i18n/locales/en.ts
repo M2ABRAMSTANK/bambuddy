@@ -7290,6 +7290,7 @@ export default {
     testButton: 'Test connection',
     testSuccess: 'Backend reachable — verdict received in {{ms}}ms.',
     testFailed: 'Could not get a verdict from the AI backend.',
+    testRequestMode: 'Request mode: {{mode}}',
     privacyWarning: 'This URL is not on your local network. Camera snapshots of your printer will be sent to this address whenever the build plate check runs. Use a local server (e.g. Ollama on your own network) to keep snapshots private, or continue if you trust this endpoint.',
     printersTitle: 'Monitored printers',
     printersHint: 'Which printers run the build plate check before a print starts, and which backend each one uses.',

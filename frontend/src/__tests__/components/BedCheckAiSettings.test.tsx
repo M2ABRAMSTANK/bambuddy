@@ -157,6 +157,76 @@ describe('BedCheckAiSettings — auto-save error surfacing', () => {
   });
 });
 
+describe('BedCheckAiSettings — test connection request mode', () => {
+  it('renders the discovered request mode on a successful test', async () => {
+    mockBase();
+    server.use(
+      http.post('/api/v1/bedcheck-ai/test-connection', () =>
+        HttpResponse.json({
+          ok: true,
+          error: null,
+          latency_ms: 42,
+          verdict: { is_empty: true, confidence: 0.9, reason: 'clear plate' },
+          request_mode: 'json_schema',
+        }),
+      ),
+    );
+    render(<BedCheckAiSettings />);
+
+    const testButton = await screen.findByRole('button', { name: /test connection/i });
+    await userEvent.click(testButton);
+
+    expect(await screen.findByText(/Backend reachable/i)).toBeInTheDocument();
+    expect(await screen.findByText('Request mode: json_schema')).toBeInTheDocument();
+  });
+
+  it('appends the degraded-mode hint when the backend fell back to json_object', async () => {
+    mockBase();
+    server.use(
+      http.post('/api/v1/bedcheck-ai/test-connection', () =>
+        HttpResponse.json({
+          ok: true,
+          error: null,
+          latency_ms: 42,
+          verdict: { is_empty: true, confidence: 0.9, reason: 'clear plate' },
+          request_mode: 'json_object',
+        }),
+      ),
+    );
+    render(<BedCheckAiSettings />);
+
+    const testButton = await screen.findByRole('button', { name: /test connection/i });
+    await userEvent.click(testButton);
+
+    expect(await screen.findByText(/Request mode: json_object/i)).toBeInTheDocument();
+    expect(screen.getByText(/Reduced JSON mode/i)).toBeInTheDocument();
+  });
+
+  it('does not render a request mode line on a failed test (field absent)', async () => {
+    mockBase();
+    server.use(
+      http.post('/api/v1/bedcheck-ai/test-connection', () =>
+        HttpResponse.json({
+          ok: false,
+          error: 'connection refused',
+          latency_ms: null,
+          verdict: null,
+          // request_mode intentionally omitted -- matches the real failure
+          // branches in bedcheck_ai.test_connection(), which return before
+          // a mode is known.
+        }),
+      ),
+    );
+    render(<BedCheckAiSettings />);
+
+    const testButton = await screen.findByRole('button', { name: /test connection/i });
+    await userEvent.click(testButton);
+
+    expect(await screen.findByText(/connection refused/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Request mode:/i)).not.toBeInTheDocument();
+  });
+});
+
 describe('BedCheckAiSettings — Monitored-printers permission gate', () => {
   it('disables the per-printer controls without printers:update', async () => {
     mockBase();
