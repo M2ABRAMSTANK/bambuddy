@@ -195,10 +195,12 @@ class _KeepWarmEntry:
 AUTO_DRY_REARM_COOLDOWN_SECONDS = 30 * 60
 AUTO_DRY_MAX_UNPRODUCTIVE_CYCLES = 2
 # Sustained-humidity wait (#2518): an above-threshold streak is only
-# "continuous" if some pass observed it within this many seconds. A unit that
+# "continuous" if some pass observed it within the gap ceiling. A unit that
 # goes unobserved longer (print running, printer disconnected, sensor silent)
-# restarts its streak rather than inheriting a stale one.
-AUTO_DRY_SUSTAINED_GAP_SECONDS = 120
+# restarts its streak rather than inheriting a stale one. The ceiling is
+# derived from the scheduler cadence — four missed passes — with this floor so
+# a fast-polling configuration does not void streaks on a single hiccup.
+AUTO_DRY_SUSTAINED_GAP_FLOOR_SECONDS = 120
 
 # How long a finished scheduled drying row is kept before it is pruned.
 SCHEDULED_DRYING_RETENTION_DAYS = 7
@@ -4454,16 +4456,37 @@ class PrintScheduler:
                 # observes the reading above the threshold, BEFORE the
                 # suspension/cooldown gates below -- a suspended or cooling-down
                 # unit still accumulates streak time, so the wait overlaps those
-                # gates instead of stacking after them.
-                _now = time.monotonic()
-                _above = self._auto_dry_above.get(unit_key)
-                if _above is None or _now - _above["last"] > AUTO_DRY_SUSTAINED_GAP_SECONDS:
-                    # Fresh streak: first observation, or the unit went
-                    # unobserved long enough (print ran, printer disconnected)
-                    # that "continuously above" can no longer be claimed.
-                    self._auto_dry_above[unit_key] = {"since": _now, "last": _now}
+                # gates instead of stacking after them. Inert when the feature
+                # is off: no entries are written, and an entry left over from a
+                # toggle-off is dropped so it cannot seed a stale streak later.
+                if sustained_minutes > 0:
+                    _now = time.monotonic()
+                    # Four missed scheduler passes, floored: a single slow pass
+                    # must not void a streak, but the ceiling has to scale with
+                    # the cadence or a slow loop silently restarts every streak.
+                    _gap_ceiling = max(4 * self._check_interval, AUTO_DRY_SUSTAINED_GAP_FLOOR_SECONDS)
+                    _above = self._auto_dry_above.get(unit_key)
+                    if _above is None:
+                        self._auto_dry_above[unit_key] = {"since": _now, "last": _now}
+                    elif _now - _above["last"] > _gap_ceiling:
+                        # Restart, and say so at the same level as the dip
+                        # reset: a silent restart voids the streak invisibly,
+                        # and a user who set a long wait and never gets a dry
+                        # has no way to see why.
+                        logger.info(
+                            "Auto-drying: printer %d AMS %d — sustained-humidity streak restarted after a "
+                            "%.0fs observation gap (ceiling %ds); the %dm wait starts over",
+                            pid,
+                            ams_id,
+                            _now - _above["last"],
+                            _gap_ceiling,
+                            sustained_minutes,
+                        )
+                        self._auto_dry_above[unit_key] = {"since": _now, "last": _now}
+                    else:
+                        _above["last"] = _now
                 else:
-                    _above["last"] = _now
+                    self._auto_dry_above.pop(unit_key, None)
 
                 if unit_state is not None:
                     if unit_state.get("suspended"):
@@ -4506,6 +4529,19 @@ class PrintScheduler:
                         )
                         continue
 
+                # Check cannot-dry reasons (power constraints etc.). Sits
+                # ahead of the sustained wait so a unit the firmware refuses
+                # to dry never logs a wait it was never going to cash in.
+                sf_reasons = ams_data.get("dry_sf_reason", [])
+                if sf_reasons:
+                    logger.debug(
+                        "Auto-drying: printer %d AMS %d skipped — cannot dry reasons: %s",
+                        pid,
+                        ams_id,
+                        sf_reasons,
+                    )
+                    continue
+
                 # Sustained-humidity wait (#2518): ambient-triggered starts
                 # wait; only a printer with a scheduled queue item pending
                 # keeps the instant behavior, because that drying has a real
@@ -4532,17 +4568,6 @@ class PrintScheduler:
                             sustained_minutes,
                         )
                         continue
-
-                # Check cannot-dry reasons (power constraints etc.)
-                sf_reasons = ams_data.get("dry_sf_reason", [])
-                if sf_reasons:
-                    logger.debug(
-                        "Auto-drying: printer %d AMS %d skipped — cannot dry reasons: %s",
-                        pid,
-                        ams_id,
-                        sf_reasons,
-                    )
-                    continue
 
                 # Get conservative drying params for mixed filaments
                 params = self._get_conservative_drying_params(trays, module_type, presets)
