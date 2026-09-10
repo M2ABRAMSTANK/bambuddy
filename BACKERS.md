@@ -31,13 +31,13 @@ If you sponsor and your name isn't here within 48h, please write an email to mar
 - [@rstocks](https://github.com/rstocks)
 - [@Neasham21](https://github.com/Neasham21)
 - [@strikerfab](https://github.com/strikerfab)
+- [@Thomansky](https://github.com/Thomansky)
 
 ## Supporters ($15/mo+)
 
 - [@rewart01](https://github.com/rewart01)
 - [@sixfootseven](https://github.com/sixfootseven)
 - [@MethodicalMartian](https://github.com/MethodicalMartian)
-- [@brianharwell](https://github.com/brianharwell)
 - [@shosier01](https://github.com/shosier01)
 - [@freifunk-bamberg](https://github.com/freifunk-bamberg)
 - [@davisgoodmanv](https://github.com/davisgoodman)
@@ -49,7 +49,6 @@ If you sponsor and your name isn't here within 48h, please write an email to mar
 - [@NoahTingey](https://github.com/NoahTingey)
 - [@sentinel-center](https://github.com/sentinel-center)
 - [@brianehlert](https://github.com/brianehlert)
-- [@siiruup](https://github.com/siiruup)
 - [@agntcoopersea](https://github.com/agntcoopersea)
 - [@PJMCL1618033](https://github.com/PJMCL1618033
 - [@mgf99](https://github.com/mgf99)
@@ -73,6 +72,7 @@ If you sponsor and your name isn't here within 48h, please write an email to mar
 - [@g7ufo](https://github.com/g7ufo)
 - [@Heidelberger2000](https://github.com/Heidelberger2000)
 - [@MorganMLGman](https://github.com/MorganMLGman)
+- [@NeighborGeek](https://github.com/NeighborGeek)
 
 ---
 
