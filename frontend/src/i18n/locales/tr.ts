@@ -766,9 +766,13 @@ export default {
         modeLabel: 'Bu yazıcı için arka uç',
         modeGlobal: 'Genel varsayılan',
         modeSaved: 'Yazıcının algılama arka ucu güncellendi',
+        aiUnavailableTitle: 'AI kontrolü kullanılamıyor — sonuç yok',
+        aiUnavailableGenericReason: 'AI arka ucuna ulaşılamadı veya kullanılamaz bir yanıt döndürdü.',
+        aiUnavailableHint: 'Baskının devam etmesine izin verildi (fail-open) — bu gerçek bir plaka kontrolü değildi.',
+        degradedNote: 'Kısıtlı JSON modu — yeniden denemek için Bağlantıyı test et\'e tıklayın.',
       },
       confidence: 'Güven',
-      difference: 'Fark',
+      difference: 'Piksel farkı',
       analysisPreview: 'Analiz önizlemesi:',
       analysisLegend: 'Yeşil kutu = algılama alanı, Kırmızı kaplama = kalibrasyondan farklar',
       savedReferences: 'Kaydedilen Referanslar ({{count}}/{{max}})',
@@ -7040,6 +7044,13 @@ export default {
     statusTitle: 'Durum',
     globalBackend: 'Genel arka uç',
     notMonitored: 'İzlenmiyor',
+    health: {
+      ok: 'Son kontrol başarılı, {{time}}',
+      unavailable: '{{time}} itibarıyla kullanılamıyor: {{reason}}',
+      degraded: 'Kısıtlı JSON modu, {{time}}',
+      noReason: 'neden belirtilmedi',
+      none: 'Henüz kontrol yok',
+    },
   },
 
   makerworld: {

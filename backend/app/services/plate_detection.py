@@ -38,16 +38,21 @@ class PlateDetectionResult:
         self,
         is_empty: bool,
         confidence: float,
-        difference_percent: float,
+        difference_percent: float | None,
         message: str,
         debug_image: bytes | None = None,
         needs_calibration: bool = False,
         backend: str = "opencv",
         ai_reason: str | None = None,
+        ai_confidence: float | None = None,
+        outcome: str = "ok",
     ):
         self.is_empty = is_empty
         self.confidence = confidence  # 0.0 to 1.0
-        self.difference_percent = difference_percent  # How different from reference
+        # How different from the calibration reference -- an OpenCV-only,
+        # pixel-diff concept. None for the AI backend, which has no reference
+        # image to diff against (see ai_confidence for its equivalent).
+        self.difference_percent = difference_percent
         self.message = message
         self.debug_image = debug_image  # Optional annotated image for debugging
         self.needs_calibration = needs_calibration  # True if no reference image exists
@@ -59,17 +64,34 @@ class PlateDetectionResult:
         # The vision model's own stated reason (AI backend only, None for
         # OpenCV) -- surfaced verbatim in the plate-check modal.
         self.ai_reason = ai_reason
+        # The vision model's own confidence in its verdict (AI backend only,
+        # None for OpenCV and for a fail-open AI result). Distinct field from
+        # `confidence` (which every backend populates) so a caller that wants
+        # "did the AI actually score this" doesn't have to also check
+        # `backend` first.
+        self.ai_confidence = ai_confidence
+        # Coarse health signal for this verdict: 'ok' (normal), 'degraded'
+        # (AI backend only -- a real verdict, but obtained via a reduced
+        # request shape after shape discovery fell back), or 'unavailable'
+        # (AI backend only -- fail-open, no verdict was actually obtained).
+        # Every OpenCV construction site passes no outcome kwarg, so the
+        # default keeps them all reporting 'ok' unmodified.
+        self.outcome = outcome
 
     def to_dict(self) -> dict:
         return {
             "is_empty": bool(self.is_empty),
             "confidence": float(round(self.confidence, 2)),
-            "difference_percent": float(round(self.difference_percent, 2)),
+            "difference_percent": (
+                None if self.difference_percent is None else float(round(self.difference_percent, 2))
+            ),
             "message": self.message,
             "has_debug_image": self.debug_image is not None,
             "needs_calibration": bool(self.needs_calibration),
             "backend": self.backend,
             "ai_reason": self.ai_reason,
+            "ai_confidence": (None if self.ai_confidence is None else float(round(self.ai_confidence, 2))),
+            "outcome": self.outcome,
         }
 
 
@@ -796,6 +818,7 @@ async def check_plate_empty(
     roi: tuple[float, float, float, float] | None = None,
     external_camera_snapshot_url: str | None = None,
     backend_override: str | None = None,
+    deadline_seconds: float | None = None,
 ) -> PlateDetectionResult:
     """Check if the build plate is empty for a printer.
 
@@ -804,9 +827,16 @@ async def check_plate_empty(
     'opencv', so existing installs see zero behavior change on upgrade):
 
     - 'opencv': calibration-based pixel-difference detection, unchanged
-      (_check_plate_empty_opencv).
+      (_check_plate_empty_opencv). deadline_seconds is not meaningful for
+      this backend and is ignored.
     - 'ai': one snapshot sent to a configured OpenAI-compatible vision model
       (services/bedcheck_ai.py). Fails open (is_empty=True) on any error.
+      deadline_seconds, when given, is forwarded to check_bed_ai() as a total
+      wall-clock budget for the whole check (see its docstring) -- used by
+      the print-start call site (main.py) via
+      bedcheck_ai.PRINT_START_DEADLINE_SECONDS; the manual-check
+      (camera.py) and test-connection paths pass nothing, keeping the
+      current DEFAULT_TIMEOUT-per-request-plus-one-retry behavior.
 
     Same args and return shape regardless of backend.
     """
@@ -863,7 +893,7 @@ async def check_plate_empty(
 
     from backend.app.services.bedcheck_ai import check_bed_ai
 
-    return await check_bed_ai(printer_id, image_data, camera_source)
+    return await check_bed_ai(printer_id, image_data, camera_source, deadline_seconds=deadline_seconds)
 
 
 async def calibrate_plate(

@@ -34,6 +34,19 @@ async def test_connection(
         return {"ok": False, "error": "Base URL and model are required", "verdict": None, "latency_ms": None}
     api_key = req.api_key
     if api_key is None:
-        cfg = await bedcheck_ai._load_ai_settings()
+        cfg = await bedcheck_ai.load_ai_settings()
         api_key = cfg["api_key"]
     return await bedcheck_ai.test_connection(req.base_url, req.model, api_key)
+
+
+@router.get("/health")
+async def get_health(
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_READ),
+):
+    """Per-printer AI bed-check health snapshot from the most recent
+    check_bed_ai() call for each printer (outcome/reason/at/request_mode) --
+    lets the settings UI show a live status badge instead of only surfacing
+    failures reactively via notification. Read-only, gated the same way the
+    settings tab reads other settings (SETTINGS_READ, not the UPDATE-level
+    permission test-connection needs)."""
+    return {"printers": bedcheck_ai.get_health()}

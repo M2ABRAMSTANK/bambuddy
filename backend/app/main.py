@@ -3049,6 +3049,7 @@ async def on_print_start(printer_id: int, data: dict):
             # archive lookups below re-acquire a fresh connection on next execute.
             await db.commit()
             try:
+                from backend.app.services.bedcheck_ai import PRINT_START_DEADLINE_SECONDS
                 from backend.app.services.plate_detection import check_plate_empty
 
                 # Build ROI tuple from printer settings if available
@@ -3092,6 +3093,10 @@ async def on_print_start(printer_id: int, data: dict):
                     roi=roi,
                     backend_override=printer.bedcheck_backend_override,
                     external_camera_snapshot_url=printer.external_camera_snapshot_url,
+                    # Print start is a safety-gating path, not a diagnostic one --
+                    # a stuck/slow AI backend must not stall the print indefinitely.
+                    # No-op for the opencv backend (see check_plate_empty's docstring).
+                    deadline_seconds=PRINT_START_DEADLINE_SECONDS,
                 )
 
                 # Restore chamber light to original state
@@ -3101,9 +3106,19 @@ async def on_print_start(printer_id: int, data: dict):
 
                 if not plate_result.needs_calibration and not plate_result.is_empty:
                     # Objects detected - pause the print!
+                    # difference_percent is an OpenCV-only pixel-diff value --
+                    # None for the AI backend (see PlateDetectionResult), which
+                    # renders its own ai_confidence instead so this never
+                    # crashes formatting None with `:.1f`.
+                    if plate_result.difference_percent is not None:
+                        metric_str = f"Diff: {plate_result.difference_percent:.1f}%"
+                    elif plate_result.ai_confidence is not None:
+                        metric_str = f"Confidence: {plate_result.ai_confidence:.0%}"
+                    else:
+                        metric_str = "Diff: N/A"
                     logger.warning(
                         f"[PLATE CHECK] Objects detected on plate for printer {printer_id}! "
-                        f"Confidence: {plate_result.confidence:.0%}, Diff: {plate_result.difference_percent:.1f}%"
+                        f"Confidence: {plate_result.confidence:.0%}, {metric_str}"
                     )
                     client = printer_manager.get_client(printer_id)
                     if client:
@@ -3116,7 +3131,7 @@ async def on_print_start(printer_id: int, data: dict):
                             "type": "plate_not_empty",
                             "printer_id": printer_id,
                             "printer_name": printer.name,
-                            "message": f"Objects detected on build plate! Print paused. (Diff: {plate_result.difference_percent:.1f}%)",
+                            "message": f"Objects detected on build plate! Print paused. ({metric_str})",
                         }
                     )
 
@@ -3127,6 +3142,7 @@ async def on_print_start(printer_id: int, data: dict):
                             printer_name=printer.name,
                             db=db,
                             difference_percent=plate_result.difference_percent,
+                            ai_confidence=plate_result.ai_confidence,
                         )
                     except Exception as notif_err:
                         logger.warning("[PLATE CHECK] Failed to send notification: %s", notif_err)

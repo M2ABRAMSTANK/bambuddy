@@ -1467,10 +1467,16 @@ async def check_plate_empty(
         Dict with detection results:
         - is_empty: bool - Whether plate appears empty
         - confidence: float - Confidence level (0.0 to 1.0)
-        - difference_percent: float - How different from calibration reference
+        - difference_percent: float | None - How different from calibration
+          reference (opencv backend only; always None for the ai backend)
+        - ai_confidence: float | None - The vision model's own confidence
+          (ai backend only; None for opencv and for an ai fail-open result)
         - message: str - Human-readable result message
         - needs_calibration: bool - True if calibration is required
         - light_warning: bool - True if chamber light is off
+        - backend: str - Which backend produced this result ('opencv' | 'ai')
+        - outcome: str - 'ok' | 'degraded' | 'unavailable' (see
+          services/bedcheck_ai.py's health registry -- opencv always 'ok')
     """
     from backend.app.services.plate_detection import (
         check_plate_empty as do_check,

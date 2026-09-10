@@ -2,10 +2,12 @@ import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Bot, Check, X, AlertTriangle, Printer as PrinterIcon, Activity } from 'lucide-react';
-import { api } from '../api/client';
+import { api, type BedcheckAiHealthEntry } from '../api/client';
 import { Card, CardContent, CardHeader } from './Card';
 import { Button } from './Button';
 import { useToast } from '../contexts/ToastContext';
+import { useAuth } from '../contexts/AuthContext';
+import { formatRelativeTime } from '../utils/date';
 
 type TestResult = { ok: boolean; message: string } | null;
 
@@ -32,10 +34,42 @@ function isLikelyLanUrl(url: string): boolean {
   }
 }
 
+/**
+ * One line describing a printer's last AI bed-check outcome, for the Status
+ * card. Returns both the text and a color class so callers don't have to
+ * duplicate the outcome switch.
+ */
+function healthLine(
+  entry: BedcheckAiHealthEntry | undefined,
+  t: (key: string, options?: Record<string, unknown>) => string,
+): { text: string; className: string } {
+  if (!entry) {
+    return { text: t('bedcheckAi.health.none'), className: 'text-bambu-gray/60' };
+  }
+  const time = formatRelativeTime(entry.at, 'system', t);
+  switch (entry.outcome) {
+    case 'ok':
+      return { text: t('bedcheckAi.health.ok', { time }), className: 'text-green-700 dark:text-green-400' };
+    case 'unavailable':
+      return {
+        text: t('bedcheckAi.health.unavailable', {
+          time,
+          reason: entry.reason || t('bedcheckAi.health.noReason'),
+        }),
+        className: 'text-amber-700 dark:text-amber-400',
+      };
+    case 'degraded':
+      return { text: t('bedcheckAi.health.degraded', { time }), className: 'text-bambu-gray' };
+    default:
+      return { text: t('bedcheckAi.health.none'), className: 'text-bambu-gray/60' };
+  }
+}
+
 export function BedCheckAiSettings() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
+  const { hasPermission } = useAuth();
 
   const [backend, setBackend] = useState<'opencv' | 'ai'>('opencv');
   const [baseUrl, setBaseUrl] = useState('');
@@ -53,6 +87,15 @@ export function BedCheckAiSettings() {
   const { data: printers } = useQuery({
     queryKey: ['printers'],
     queryFn: api.getPrinters,
+  });
+
+  // Last-outcome health snapshot for the Status card. Fetched once on mount
+  // (and again after a successful Test connection below) — deliberately not
+  // polled.
+  const { data: health, refetch: refetchHealth } = useQuery({
+    queryKey: ['bedcheckAiHealth'],
+    queryFn: api.getBedcheckAiHealth,
+    refetchInterval: false,
   });
 
   // Per-printer rows: plate-check enabled toggle + backend override select.
@@ -87,6 +130,7 @@ export function BedCheckAiSettings() {
       queryClient.invalidateQueries({ queryKey: ['settings'] });
       showToast(t('settings.toast.settingsSaved'));
     },
+    onError: (error: Error) => showToast(error.message, 'error'),
   });
 
   // Auto-save on change (debounced) -- same pattern as FailureDetectionSettings.
@@ -113,6 +157,9 @@ export function BedCheckAiSettings() {
           ok: true,
           message: t('bedcheckAi.testSuccess', { ms: res.latency_ms ?? '?' }),
         });
+        // A successful probe is the one non-mount moment worth refreshing the
+        // Status card's health badges for — the backend may have just healed.
+        refetchHealth();
       } else {
         setTestResult({ ok: false, message: res.error || t('bedcheckAi.testFailed') });
       }
@@ -244,7 +291,7 @@ export function BedCheckAiSettings() {
                   <input
                     type="checkbox"
                     checked={p.plate_detection_enabled}
-                    disabled={printerUpdateMutation.isPending}
+                    disabled={printerUpdateMutation.isPending || !hasPermission('printers:update')}
                     onChange={(e) =>
                       printerUpdateMutation.mutate({ id: p.id, patch: { plate_detection_enabled: e.target.checked } })
                     }
@@ -253,7 +300,7 @@ export function BedCheckAiSettings() {
                 </label>
                 <select
                   value={p.bedcheck_backend_override ?? ''}
-                  disabled={printerUpdateMutation.isPending}
+                  disabled={printerUpdateMutation.isPending || !hasPermission('printers:update')}
                   onChange={(e) =>
                     printerUpdateMutation.mutate({
                       id: p.id,
@@ -299,19 +346,33 @@ export function BedCheckAiSettings() {
             </div>
           )}
           {printers && printers.length > 0 && (
-            <div className="pt-2 border-t border-bambu-dark-tertiary space-y-1">
-              {printers.map((p) => (
-                <div key={p.id} className="flex justify-between gap-4">
-                  <span className="text-bambu-gray truncate">{p.name}</span>
-                  <span className={p.plate_detection_enabled ? 'text-green-700 dark:text-green-400' : 'text-bambu-gray/60'}>
-                    {p.plate_detection_enabled
-                      ? (p.bedcheck_backend_override === 'ai' || (!p.bedcheck_backend_override && backend === 'ai')
-                          ? t('bedcheckAi.backendAi')
-                          : t('bedcheckAi.backendOpencv'))
-                      : t('bedcheckAi.notMonitored')}
-                  </span>
-                </div>
-              ))}
+            <div className="pt-2 border-t border-bambu-dark-tertiary space-y-1.5">
+              {printers.map((p) => {
+                // The effective backend for this printer: its own override if
+                // set, otherwise the global one.
+                const usesAi =
+                  p.bedcheck_backend_override === 'ai' || (!p.bedcheck_backend_override && backend === 'ai');
+                // Health is an AI-backend concept only. An OpenCV-monitored
+                // printer has no AI outcome to report, so rendering the line
+                // for it would show a permanent "No checks yet" that never
+                // resolves — reads as a fault where there is none.
+                const line = p.plate_detection_enabled && usesAi
+                  ? healthLine(health?.printers?.[String(p.id)], t)
+                  : null;
+                return (
+                  <div key={p.id} className="space-y-0.5">
+                    <div className="flex justify-between gap-4">
+                      <span className="text-bambu-gray truncate">{p.name}</span>
+                      <span className={p.plate_detection_enabled ? 'text-green-700 dark:text-green-400' : 'text-bambu-gray/60'}>
+                        {p.plate_detection_enabled
+                          ? (usesAi ? t('bedcheckAi.backendAi') : t('bedcheckAi.backendOpencv'))
+                          : t('bedcheckAi.notMonitored')}
+                      </span>
+                    </div>
+                    {line && <div className={`text-xs ${line.className}`}>{line.text}</div>}
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>

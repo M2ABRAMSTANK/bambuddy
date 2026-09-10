@@ -771,9 +771,13 @@ export default {
         modeLabel: 'Backend for this printer',
         modeGlobal: 'Global default',
         modeSaved: 'Printer detection backend updated',
+        aiUnavailableTitle: 'AI check unavailable — no verdict',
+        aiUnavailableGenericReason: 'The AI backend could not be reached or returned an unusable response.',
+        aiUnavailableHint: 'The print was allowed to proceed (fail-open) — this was not a real plate check.',
+        degradedNote: 'Reduced JSON mode — run Test connection to re-probe.',
       },
       confidence: 'Confidence',
-      difference: 'Difference',
+      difference: 'Pixel difference',
       analysisPreview: 'Analysis preview:',
       analysisLegend: 'Green box = detection area, Red overlay = differences from calibration',
       savedReferences: 'Saved References ({{count}}/{{max}})',
@@ -7151,6 +7155,13 @@ export default {
     statusTitle: 'Status',
     globalBackend: 'Global backend',
     notMonitored: 'Not monitored',
+    health: {
+      ok: 'Last check ok, {{time}}',
+      unavailable: 'Unavailable since {{time}}: {{reason}}',
+      degraded: 'Reduced JSON mode, {{time}}',
+      noReason: 'no reason given',
+      none: 'No checks yet',
+    },
   },
 
   makerworld: {

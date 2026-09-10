@@ -766,9 +766,13 @@ export default {
         modeLabel: 'Backend für diesen Drucker',
         modeGlobal: 'Globaler Standard',
         modeSaved: 'Erkennungs-Backend des Druckers aktualisiert',
+        aiUnavailableTitle: 'KI-Prüfung nicht verfügbar — kein Ergebnis',
+        aiUnavailableGenericReason: 'Das KI-Backend konnte nicht erreicht werden oder hat eine unbrauchbare Antwort zurückgegeben.',
+        aiUnavailableHint: 'Der Druck durfte fortgesetzt werden (Fail-Open) — dies war keine echte Plattenprüfung.',
+        degradedNote: 'Eingeschränkter JSON-Modus — klicken Sie auf Verbindung testen, um erneut zu prüfen.',
       },
       confidence: 'Konfidenz',
-      difference: 'Differenz',
+      difference: 'Pixelabweichung',
       analysisPreview: 'Analysevorschau:',
       analysisLegend: 'Grüner Rahmen = Erkennungsbereich, Rote Überlagerung = Unterschiede zur Kalibrierung',
       savedReferences: 'Gespeicherte Referenzen ({{count}}/{{max}})',
@@ -7101,6 +7105,13 @@ export default {
     statusTitle: 'Status',
     globalBackend: 'Globales Backend',
     notMonitored: 'Nicht überwacht',
+    health: {
+      ok: 'Letzte Prüfung OK, {{time}}',
+      unavailable: 'Nicht verfügbar seit {{time}}: {{reason}}',
+      degraded: 'Eingeschränkter JSON-Modus, {{time}}',
+      noReason: 'kein Grund angegeben',
+      none: 'Noch keine Prüfungen',
+    },
   },
 
   makerworld: {

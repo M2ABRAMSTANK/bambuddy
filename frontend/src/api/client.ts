@@ -660,7 +660,8 @@ export interface PlateDetectionROI {
 export interface PlateDetectionResult {
   is_empty: boolean;
   confidence: number;
-  difference_percent: number;
+  // null for AI-backend results (the AI backend doesn't do pixel diffing).
+  difference_percent: number | null;
   message: string;
   has_debug_image: boolean;
   debug_image_url?: string;
@@ -674,6 +675,15 @@ export interface PlateDetectionResult {
   backend?: 'opencv' | 'ai';
   // The vision model's stated reason (AI backend only).
   ai_reason?: string | null;
+  // How the check actually went: 'ok' = normal verdict, 'unavailable' = the
+  // AI backend couldn't be reached/parsed and the check fell back open (no
+  // real verdict — is_empty/confidence are fail-open placeholders, not to be
+  // trusted), 'degraded' = got a verdict but had to fall back to a reduced
+  // JSON mode. Absent on payloads predating this field → treat as 'ok'.
+  outcome?: 'ok' | 'unavailable' | 'degraded';
+  // The AI backend's stated confidence (AI backend only); null when not
+  // provided by the model.
+  ai_confidence?: number | null;
 }
 
 export interface PlateDetectionStatus {
@@ -3222,6 +3232,25 @@ export interface BedcheckAiTestConnection {
   error: string | null;
   latency_ms: number | null;
   verdict: { is_empty: boolean; confidence: number; reason: string } | null;
+  // Whether the model call used the strict JSON-schema mode or fell back to
+  // the looser JSON-object mode.
+  request_mode: 'json_schema' | 'json_object';
+}
+
+// One printer's most recent AI bed-check outcome, as tracked by the backend
+// since app start. Printers with no AI check yet are simply absent from
+// BedcheckAiHealth.printers.
+export interface BedcheckAiHealthEntry {
+  outcome: 'ok' | 'unavailable' | 'degraded';
+  reason: string | null;
+  // UTC ISO timestamp of the last AI check.
+  at: string;
+  request_mode: 'json_schema' | 'json_object';
+}
+
+export interface BedcheckAiHealth {
+  // Keyed by printer id (as a string, per JSON object-key semantics).
+  printers: Record<string, BedcheckAiHealthEntry>;
 }
 
 export interface GitHubTestConnectionResponse {
@@ -7380,6 +7409,11 @@ export const api = {
         ...(apiKey === undefined ? {} : { api_key: apiKey }),
       }),
     }),
+
+  // Per-printer AI bed-check health snapshot, settings-read gated. Printers
+  // with no AI check since app start are absent from the response.
+  getBedcheckAiHealth: () =>
+    request<BedcheckAiHealth>('/bedcheck-ai/health'),
 
   // Slicer API — slice in the background. Both endpoints return 202 + a
   // job_id; poll /slice-jobs/{id} until status is `completed` or `failed`.

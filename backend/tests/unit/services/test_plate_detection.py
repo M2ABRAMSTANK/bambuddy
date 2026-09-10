@@ -294,7 +294,7 @@ class TestSelectorDispatch:
                 result = await pd_module.check_plate_empty(1, "10.0.0.5", "code", "X1C")
 
             mock_capture.assert_awaited_once()
-            mock_check_bed_ai.assert_awaited_once_with(1, b"\xff\xd8fake", "built-in")
+            mock_check_bed_ai.assert_awaited_once_with(1, b"\xff\xd8fake", "built-in", deadline_seconds=None)
             mock_opencv.assert_not_awaited()
             assert result is sentinel
 

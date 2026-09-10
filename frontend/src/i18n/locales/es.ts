@@ -766,9 +766,13 @@ export default {
         modeLabel: 'Backend para esta impresora',
         modeGlobal: 'Predeterminado global',
         modeSaved: 'Backend de detección de la impresora actualizado',
+        aiUnavailableTitle: 'Comprobación de IA no disponible — sin veredicto',
+        aiUnavailableGenericReason: 'No se pudo contactar con el backend de IA o devolvió una respuesta inutilizable.',
+        aiUnavailableHint: 'Se permitió que la impresión continuara (fail-open) — esto no fue una comprobación real de la cama.',
+        degradedNote: 'Modo JSON reducido — haga clic en Probar conexión para volver a comprobar.',
       },
       confidence: 'Confianza',
-      difference: 'Diferencia',
+      difference: 'Diferencia de píxeles',
       analysisPreview: 'Vista previa del análisis:',
       analysisLegend: 'Recuadro verde = área de detección, Superposición roja = diferencias respecto a la calibración',
       savedReferences: 'Referencias guardadas ({{count}}/{{max}})',
@@ -7109,6 +7113,13 @@ export default {
     statusTitle: 'Estado',
     globalBackend: 'Backend global',
     notMonitored: 'Sin supervisar',
+    health: {
+      ok: 'Última comprobación correcta, {{time}}',
+      unavailable: 'No disponible desde {{time}}: {{reason}}',
+      degraded: 'Modo JSON reducido, {{time}}',
+      noReason: 'sin motivo especificado',
+      none: 'Aún no hay comprobaciones',
+    },
   },
 
   makerworld: {
