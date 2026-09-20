@@ -24,6 +24,7 @@ export const FAILURE_REASON_KEYS = [
   'underExtrusion',
   'powerFailure',
   'userCancelled',
+  'noStatusUpdate',
   'other',
 ] as const;
 
@@ -59,10 +60,18 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
   const [projectId, setProjectId] = useState<number | null>(archive.project_id ?? null);
   const [notes, setNotes] = useState(archive.notes || '');
   const [tags, setTags] = useState(archive.tags || '');
-  // Failure reason is stored as a camelCase key (`filamentRunout`), but earlier
-  // versions of this modal saved the translated label as the value. Reverse-
-  // lookup any legacy translated text against the current locale so the
-  // dropdown pre-selects the right option, then any save converts it forward.
+  // Failure reason is stored as a camelCase key (`filamentRunout`). Three older
+  // writers stored other spellings -- English display labels from the backend,
+  // this modal's own translated labels, and two prose sentences from the stale
+  // archive paths -- and a startup migration folds all of them onto keys
+  // (issue #2974). This reverse lookup is the belt to that migration's braces,
+  // for a frontend running against a backend that has not restarted yet.
+  //
+  // A value it cannot resolve is kept rather than dropped. It used to fall back
+  // to '', which did not merely look wrong: the empty selection was then saved
+  // over the stored text, so opening the editor on an archive whose reason was
+  // free text and pressing Save silently destroyed the classification. Anything
+  // unrecognised now shows up as its own option (see `unmappedReason` below).
   const [failureReason, setFailureReason] = useState(() => {
     const raw = archive.failure_reason || '';
     if (!raw) return '';
@@ -70,8 +79,15 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
     const match = FAILURE_REASON_KEYS.find(
       (k) => t(`editArchive.failureReasons.${k}`) === raw,
     );
-    return match || '';
+    return match || raw;
   });
+
+  // The stored value when it is not part of the vocabulary, so the dropdown can
+  // offer it verbatim instead of appearing empty over a reason that exists.
+  const unmappedReason =
+    failureReason && !(FAILURE_REASON_KEYS as readonly string[]).includes(failureReason)
+      ? failureReason
+      : null;
   const [status, setStatus] = useState(archive.status);
   const [quantity, setQuantity] = useState(archive.quantity ?? 1);
   // Kept as a string so the field can be genuinely empty: a print archived
@@ -337,15 +353,19 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
 
           {/* Quantity - number of items printed */}
           <div>
-            <label className="block text-sm text-bambu-gray mb-1">
+            <label className="block text-sm text-bambu-gray mb-1" htmlFor="archive-items-printed">
               <Hash className="w-4 h-4 inline mr-1" />
               {t('editArchive.itemsPrinted')}
             </label>
             <input
+              id="archive-items-printed"
               type="number"
-              min={1}
+              min={0}
               value={quantity}
-              onChange={(e) => setQuantity(Math.max(1, parseInt(e.target.value) || 1))}
+              // 0 is a real answer, not an empty field: a plate that jammed and
+              // came off ruined produced nothing, and the project's completed
+              // count has to be able to say so (#3051).
+              onChange={(e) => setQuantity(Math.max(0, parseInt(e.target.value) || 0))}
               className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
               placeholder="1"
             />
@@ -525,6 +545,11 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
                     {t(`editArchive.failureReasons.${reasonKey}`)}
                   </option>
                 ))}
+                {/* A stored reason outside the vocabulary keeps its own option
+                    so it stays visible and survives a save (issue #2974). */}
+                {unmappedReason && (
+                  <option value={unmappedReason}>{unmappedReason}</option>
+                )}
               </select>
             </div>
           )}
