@@ -4699,8 +4699,10 @@ class TestStartPrintUniqueIdentityFields:
         assert cmd["url"] == "ftp://test.3mf"
         assert cmd["file"] == "test.3mf"
         assert cmd["profile_id"] == "0"
-        assert cmd["cfg"] == "0"
         assert cmd["subtask_name"] == "test"
+        # The device-config bitmask is not a per-job field and is no longer
+        # sent; the printer echoed it back and we read it as telemetry (#3040).
+        assert "cfg" not in cmd
 
 
 class TestDeleteKProfileDualNozzleDetection:
@@ -6951,6 +6953,82 @@ class TestAmsFilamentBackupHoldTimer:
         assert mqtt_client._xcam_hold_start["print_option_auto_switch_filament"] == before_hold
 
 
+class TestCommandAckIsNotTelemetry:
+    """Regression (#3040): a printer's command acknowledgement echoes the
+    fields Bambuddy sent, so ingesting one as status reads our own request
+    back as the printer's state.
+
+    Bambuddy used to put ``"cfg": "0"`` in every project_file. The ack came
+    back carrying it, bit 18 read as "AMS Filament Backup OFF", and on the
+    families that don't repeat ``cfg`` in their periodic frames (P1S, A1,
+    A1 Mini, A2L) the wrong value stuck until the user toggled it — which
+    silently disabled the prefer-lowest-remaining gate for the rest of the day.
+    """
+
+    @pytest.fixture
+    def mqtt_client(self):
+        from unittest.mock import MagicMock
+
+        from backend.app.services.bambu_mqtt import BambuMQTTClient
+
+        client = BambuMQTTClient(
+            ip_address="192.168.1.100",
+            serial_number="TEST123",
+            access_code="12345678",
+        )
+        client.state.connected = True
+        client._client = MagicMock()
+        return client
+
+    def test_project_file_ack_does_not_clear_backup_state(self, mqtt_client):
+        mqtt_client.state.ams_filament_backup = True
+
+        mqtt_client._process_message(
+            {"print": {"command": "project_file", "sequence_id": "20000", "cfg": "0", "result": "success"}}
+        )
+
+        assert mqtt_client.state.ams_filament_backup is True
+
+    def test_project_file_ack_leaves_unknown_backup_unknown(self, mqtt_client):
+        """A1 / A1 Mini never report cfg, so the state must stay None ("unknown")
+        — the value the prefer-lowest gate reads as "preserve old behaviour"."""
+        assert mqtt_client.state.ams_filament_backup is None
+
+        mqtt_client._process_message({"print": {"command": "project_file", "cfg": "0"}})
+
+        assert mqtt_client.state.ams_filament_backup is None
+
+    def test_push_status_still_updates_backup_state(self, mqtt_client):
+        mqtt_client.state.ams_filament_backup = True
+
+        mqtt_client._process_message({"print": {"command": "push_status", "cfg": "C0340BC219"}})  # bit18=0
+
+        assert mqtt_client.state.ams_filament_backup is False
+
+    def test_status_frame_without_command_still_updates_backup_state(self, mqtt_client):
+        """Some firmwares omit `command` on a status frame; those stay trusted."""
+        mqtt_client.state.ams_filament_backup = False
+
+        mqtt_client._process_message({"print": {"cfg": "C0340FC219"}})  # bit18=1
+
+        assert mqtt_client.state.ams_filament_backup is True
+
+    def test_project_file_ack_does_not_clear_timelapse_state(self, mqtt_client):
+        """The ack echoes the per-job timelapse request, not the recorder."""
+        mqtt_client.state.timelapse = True
+
+        mqtt_client._process_message({"print": {"command": "project_file", "timelapse": False}})
+
+        assert mqtt_client.state.timelapse is True
+
+    def test_push_status_still_updates_timelapse_state(self, mqtt_client):
+        mqtt_client.state.timelapse = True
+
+        mqtt_client._process_message({"print": {"command": "push_status", "timelapse": False}})
+
+        assert mqtt_client.state.timelapse is False
+
+
 # ---------------------------------------------------------------------------
 # 2c. Single-nozzle H2S — external-spool tray_now override (#1822)
 # ---------------------------------------------------------------------------
@@ -6961,11 +7039,12 @@ class TestTrayNowH2SExternalSpoolOverride:
     instead of 254 when the active feed is the external spool.
 
     Bambuddy detects the all-external case via the slicer-captured
-    ams_mapping (every entry == -1) and promotes tray_now to 254 so the
-    UI active-tray highlight matches the real feed.
+    ams_mapping (every entry 254, or -1 when the command carried no
+    ams_mapping2 to resolve it from, #3166) and promotes tray_now to 254 so
+    the UI active-tray highlight matches the real feed.
 
     The override is intentionally narrow:
-      * only fires when ams_mapping is captured AND every entry is -1
+      * only fires when ams_mapping is captured AND every entry is external
       * does not touch mixed prints ([5, -1]) or AMS-only prints ([5])
       * does not fire when no ams_mapping is captured (printer-screen start)
     """
@@ -6991,6 +7070,14 @@ class TestTrayNowH2SExternalSpoolOverride:
         """Multi-filament print, every filament mapped to external. Still
         all-external -> still promotes."""
         mqtt_client._captured_ams_mapping = [-1, -1, -1]
+        mqtt_client._process_message(_ams_payload(0))
+        assert mqtt_client.state.tray_now == 254
+
+    def test_resolved_external_mapping_promotes(self, mqtt_client):
+        """Since #3166 the capture resolves the external spool from
+        ams_mapping2, so a single-nozzle all-external print arrives as [254]
+        rather than [-1]. The override must still fire."""
+        mqtt_client._captured_ams_mapping = [254]
         mqtt_client._process_message(_ams_payload(0))
         assert mqtt_client.state.tray_now == 254
 
