@@ -7169,7 +7169,7 @@ export default {
     backendAi: 'AI',
     backendHint: 'OpenCV: hızlı, yerel, ağ çağrısı yok; kurduğunuz algılama alanını ve kalibrasyon referans fotoğraflarını kullanır. AI: yapılandırdığınız bir görüntü modeline anlık görüntü gönderir; kameranın tüm karesini değerlendirir ve algılama alanını veya kalibrasyon ayarlarını kullanmaz.',
     baseUrlLabel: 'AI arka ucu URL\'si',
-    baseUrlHint: 'OpenAI uyumlu uç nokta, örn. yerel bir Ollama sunucusu (http://192.168.1.20:11434/v1) veya barındırılan bir API (https://api.openai.com/v1).',
+    baseUrlHint: 'OpenAI uyumlu uç nokta, örn. yerel bir Ollama sunucusu (http://192.168.1.20:11434/v1).',
     modelLabel: 'Model adı',
     modelHint: 'Her istekle birlikte gönderilen model adı, örn. yerel Ollama için qwen2.5vl:7b.',
     apiKeyLabel: 'API anahtarı (isteğe bağlı)',

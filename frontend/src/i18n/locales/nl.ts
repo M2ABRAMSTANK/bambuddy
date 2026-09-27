@@ -7281,7 +7281,7 @@ export default {
     backendAi: 'AI',
     backendHint: 'OpenCV: snel, lokaal, geen netwerkverkeer; gebruikt het interessegebied en de kalibratiereferentiefoto\'s die je hebt ingesteld. AI: stuurt een momentopname naar een door jou geconfigureerd visiemodel; beoordeelt het volledige camerabeeld en gebruikt het interessegebied of de kalibratie-instellingen niet.',
     baseUrlLabel: 'AI-backend-URL',
-    baseUrlHint: 'OpenAI-compatibel eindpunt, bijvoorbeeld een lokale Ollama-server (http://192.168.1.20:11434/v1) of een gehoste API (https://api.openai.com/v1).',
+    baseUrlHint: 'OpenAI-compatibel eindpunt, bijvoorbeeld een lokale Ollama-server (http://192.168.1.20:11434/v1).',
     modelLabel: 'Modelnaam',
     modelHint: 'Modelnaam die met elk verzoek wordt meegestuurd, bijvoorbeeld qwen2.5vl:7b voor lokale Ollama.',
     apiKeyLabel: 'API-sleutel (optioneel)',

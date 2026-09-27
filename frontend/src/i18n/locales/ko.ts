@@ -6683,7 +6683,7 @@ export default {
     backendAi: 'AI',
     backendHint: 'OpenCV: 빠르고 로컬에서 실행되며 네트워크 호출이 없습니다. 설정한 감지 영역과 캘리브레이션 참조 사진을 사용합니다. AI: 구성한 비전 모델에 스냅샷을 전송하며, 카메라 화면 전체를 평가하고 감지 영역이나 캘리브레이션 설정은 사용하지 않습니다.',
     baseUrlLabel: 'AI 백엔드 URL',
-    baseUrlHint: 'OpenAI 호환 엔드포인트. 예: 로컬 Ollama 서버(http://192.168.1.20:11434/v1) 또는 호스팅된 API(https://api.openai.com/v1).',
+    baseUrlHint: 'OpenAI 호환 엔드포인트. 예: 로컬 Ollama 서버(http://192.168.1.20:11434/v1).',
     modelLabel: '모델 이름',
     modelHint: '각 요청과 함께 전송되는 모델 이름. 예: 로컬 Ollama의 경우 qwen2.5vl:7b.',
     apiKeyLabel: 'API 키 (선택 사항)',

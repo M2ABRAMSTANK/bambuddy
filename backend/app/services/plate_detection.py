@@ -7,8 +7,10 @@ a reference image of the empty plate.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+import time
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -831,8 +833,7 @@ async def check_plate_empty(
       this backend and is ignored.
     - 'ai': one snapshot sent to a configured OpenAI-compatible vision model
       (services/bedcheck_ai.py). Fails open (is_empty=True) on any error.
-      deadline_seconds, when given, is forwarded to check_bed_ai() as a total
-      wall-clock budget for the whole check (see its docstring) -- used by
+      deadline_seconds, when given, bounds camera capture plus AI analysis -- used by
       the print-start call site (main.py) via
       bedcheck_ai.PRINT_START_DEADLINE_SECONDS; the manual-check
       (camera.py) and test-connection paths pass nothing, keeping the
@@ -872,7 +873,10 @@ async def check_plate_empty(
         )
 
     # backend == "ai" -- needs one captured frame, independent of OPENCV_AVAILABLE.
-    image_data, camera_source = await capture_camera_image(
+    from backend.app.services.bedcheck_ai import check_bed_ai, unavailable_result
+
+    started = time.monotonic()
+    capture = capture_camera_image(
         printer_id,
         ip_address,
         access_code,
@@ -882,18 +886,32 @@ async def check_plate_empty(
         use_external,
         external_camera_snapshot_url=external_camera_snapshot_url,
     )
-    if image_data is None:
-        return PlateDetectionResult(
-            is_empty=True,  # Default to empty on error
-            confidence=0.0,
-            difference_percent=0.0,
-            message="Failed to capture camera frame from any source",
-            backend="ai",
+    try:
+        image_data, camera_source = (
+            await asyncio.wait_for(capture, timeout=deadline_seconds) if deadline_seconds is not None else await capture
         )
+    except asyncio.TimeoutError:
+        return unavailable_result(printer_id, "camera", "request timed out")
+    except Exception:
+        logger.warning("AI bed-check camera capture failed for printer %s", printer_id, exc_info=True)
+        return unavailable_result(printer_id, "camera", "camera capture failed")
+    if image_data is None:
+        return unavailable_result(printer_id, camera_source, "camera capture failed")
 
-    from backend.app.services.bedcheck_ai import check_bed_ai
-
-    return await check_bed_ai(printer_id, image_data, camera_source, deadline_seconds=deadline_seconds)
+    if deadline_seconds is None:
+        return await check_bed_ai(printer_id, image_data, camera_source)
+    remaining = deadline_seconds - (time.monotonic() - started)
+    if remaining <= 0:
+        return unavailable_result(printer_id, camera_source, "request timed out")
+    try:
+        # The service bounds its HTTP request, while this outer guard also
+        # covers settings I/O and image conversion before the request starts.
+        return await asyncio.wait_for(
+            check_bed_ai(printer_id, image_data, camera_source, deadline_seconds=remaining),
+            timeout=remaining,
+        )
+    except asyncio.TimeoutError:
+        return unavailable_result(printer_id, camera_source, "request timed out")
 
 
 async def calibrate_plate(

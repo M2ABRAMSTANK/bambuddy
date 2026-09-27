@@ -29,9 +29,8 @@ from backend.app.services.plate_detection import PlateDetectionResult
 logger = logging.getLogger(__name__)
 
 DOWNSCALE_MAX_EDGE = 768
-# Module constant, not a user setting. Sized for a cold local-model worst
-# case with margin; warm calls at 768px are well under a second (bench
-# median 1.1s). This ceiling only governs the uncapped manual-check and
+# Module constant, not a user setting. Sized for a cold local-model case
+# with margin. This ceiling only governs the uncapped manual-check and
 # test-connection paths -- the print-start path never waits this long
 # regardless, since it's bounded by PRINT_START_DEADLINE_SECONDS below and
 # primed ahead of time by warmup().
@@ -50,8 +49,9 @@ CONNECT_TIMEOUT_CAP = 5.0
 # Without this a wedged endpoint could hold the settings UI for 3 x 60s.
 DISCOVERY_RETRY_TIMEOUT = 20.0
 
-# Total wall-clock budget (downscale + request, no parse retry) for the
-# print-start safety check -- see check_bed_ai(deadline_seconds=...). Kept
+# Total wall-clock budget (camera capture + downscale + request, no parse
+# retry) for the AI part of the print-start safety check -- see
+# plate_detection.check_plate_empty(deadline_seconds=...). Kept
 # well under DEFAULT_TIMEOUT so a stuck AI backend can't stall print start.
 # Sized from measured cold starts of qwen2.5vl:7b on an RTX 3090 via Ollama
 # (2026-09-10, full-size frame): 8.8-12.4s from an empty GPU, 11.1s when a
@@ -702,18 +702,7 @@ async def check_bed_ai(
         # finished, in which case no shape was ever chosen and the default is
         # exactly what the next attempt will use.
         request_mode = observed_shape.get("response_mode", _DEFAULT_SHAPE["response_mode"])
-        _record_outcome(printer_id, "unavailable", reason_str, request_mode)
-        _dispatch_unavailable_transition(printer_id, previous_outcome, reason_str)
-        return PlateDetectionResult(
-            is_empty=True,
-            confidence=0.0,
-            difference_percent=None,
-            ai_confidence=None,
-            needs_calibration=False,
-            message=f"[{camera_source}] AI bed-check unavailable: {reason_str}",
-            backend="ai",
-            outcome="unavailable",
-        )
+        return unavailable_result(printer_id, camera_source, reason_str, request_mode, previous_outcome)
     # A successful verdict obtained via the json_object fallback shape is
     # real but was reached via a reduced request shape -- surfaced as
     # "degraded" rather than "ok" so the health UI can flag it even though
@@ -721,6 +710,36 @@ async def check_bed_ai(
     outcome = "degraded" if request_mode == "json_object" else "ok"
     _record_outcome(printer_id, outcome, None, request_mode)
     return build_ai_result(is_empty, confidence, reason, camera_source, outcome=outcome)
+
+
+def unavailable_result(
+    printer_id: int,
+    camera_source: str,
+    reason: str,
+    request_mode: str = "json_schema",
+    previous_outcome: str | None = None,
+) -> PlateDetectionResult:
+    """Record a fail-open result, including failures before model inference.
+
+    Camera capture and the outer print-start deadline can fail before
+    check_bed_ai() gets control. They still need the same visible health state
+    and unavailable-transition notification as a model or network failure.
+    ``reason`` must be a fixed, user-safe message, never raw exception text.
+    """
+    if previous_outcome is None:
+        previous_outcome = _last_outcome.get(printer_id, {}).get("outcome")
+    _record_outcome(printer_id, "unavailable", reason, request_mode)
+    _dispatch_unavailable_transition(printer_id, previous_outcome, reason)
+    return PlateDetectionResult(
+        is_empty=True,
+        confidence=0.0,
+        difference_percent=None,
+        ai_confidence=None,
+        needs_calibration=False,
+        message=f"[{camera_source}] AI bed-check unavailable: {reason}",
+        backend="ai",
+        outcome="unavailable",
+    )
 
 
 async def warmup() -> None:

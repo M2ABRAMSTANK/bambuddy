@@ -7218,7 +7218,7 @@ export default {
     backendAi: 'IA',
     backendHint: 'OpenCV: rápido, local, sem chamadas de rede; usa a área de detecção e as fotos de referência de calibração que você configurou. IA: envia um snapshot para um modelo de visão que você configurar; avalia o quadro completo da câmera e não usa a área de detecção nem as configurações de calibração.',
     baseUrlLabel: 'URL do backend de IA',
-    baseUrlHint: 'Endpoint compatível com OpenAI, ex.: um servidor Ollama local (http://192.168.1.20:11434/v1) ou uma API hospedada (https://api.openai.com/v1).',
+    baseUrlHint: 'Endpoint compatível com OpenAI, ex.: um servidor Ollama local (http://192.168.1.20:11434/v1).',
     modelLabel: 'Nome do modelo',
     modelHint: 'Nome do modelo enviado a cada requisição, ex.: qwen2.5vl:7b para Ollama local.',
     apiKeyLabel: 'Chave de API (opcional)',

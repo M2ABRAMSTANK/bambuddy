@@ -7230,7 +7230,7 @@ export default {
     backendAi: 'AI',
     backendHint: 'OpenCV:高速でローカル動作、ネットワーク通信なし。設定済みの検出エリアとキャリブレーション用の参照写真を使用します。AI:設定したビジョンモデルにスナップショットを送信し、カメラ画像全体を評価します。検出エリアやキャリブレーション設定は使用しません。',
     baseUrlLabel: 'AI バックエンドの URL',
-    baseUrlHint: 'OpenAI 互換のエンドポイント。例:ローカルの Ollama サーバー(http://192.168.1.20:11434/v1)や、ホスト型 API(https://api.openai.com/v1)。',
+    baseUrlHint: 'OpenAI 互換のエンドポイント。例:ローカルの Ollama サーバー(http://192.168.1.20:11434/v1)。',
     modelLabel: 'モデル名',
     modelHint: '各リクエストで送信されるモデル名。例:ローカル Ollama なら qwen2.5vl:7b。',
     apiKeyLabel: 'API キー(任意)',

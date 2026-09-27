@@ -7216,7 +7216,7 @@ export default {
     backendAi: 'AI',
     backendHint: 'OpenCV:速度快、本機執行、不需要網路連線;使用您設定的檢測區域和校準參考照片。AI:將快照傳送給您設定的視覺模型;評估整個攝影機畫面,不使用檢測區域或校準設定。',
     baseUrlLabel: 'AI 後端 URL',
-    baseUrlHint: '相容 OpenAI 的端點,例如本機 Ollama 伺服器(http://192.168.1.20:11434/v1)或代管 API(https://api.openai.com/v1)。',
+    baseUrlHint: '相容 OpenAI 的端點,例如本機 Ollama 伺服器(http://192.168.1.20:11434/v1)。',
     modelLabel: '模型名稱',
     modelHint: '隨每次請求傳送的模型名稱,例如本機 Ollama 使用 qwen2.5vl:7b。',
     apiKeyLabel: 'API 金鑰(選填)',

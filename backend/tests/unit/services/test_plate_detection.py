@@ -294,15 +294,13 @@ class TestSelectorDispatch:
                 result = await pd_module.check_plate_empty(1, "10.0.0.5", "code", "X1C")
 
             mock_capture.assert_awaited_once()
-            mock_check_bed_ai.assert_awaited_once_with(1, b"\xff\xd8fake", "built-in", deadline_seconds=None)
+            mock_check_bed_ai.assert_awaited_once_with(1, b"\xff\xd8fake", "built-in")
             mock_opencv.assert_not_awaited()
             assert result is sentinel
 
     @pytest.mark.asyncio
     async def test_ai_backend_fails_open_when_capture_fails(self):
-        """bedcheck_backend='ai' but no frame captured -> the same
-        'Failed to capture camera frame from any source' fail-open result as
-        the opencv path uses, and bedcheck_ai.check_bed_ai is never called."""
+        """Capture failure is visibly unavailable, with no fake pixel difference."""
         with patch.dict("sys.modules", {"cv2": cv2_mock, "numpy": np_mock}):
             import importlib
 
@@ -314,13 +312,100 @@ class TestSelectorDispatch:
                 patch("backend.app.core.database.async_session", _mock_async_session(row_value="ai")),
                 patch.object(pd_module, "capture_camera_image", AsyncMock(return_value=(None, "unknown"))),
                 patch("backend.app.services.bedcheck_ai.check_bed_ai", AsyncMock()) as mock_check_bed_ai,
+                patch("backend.app.services.bedcheck_ai._dispatch_unavailable_transition"),
             ):
                 result = await pd_module.check_plate_empty(1, "10.0.0.5", "code", "X1C")
 
             mock_check_bed_ai.assert_not_awaited()
             assert result.is_empty is True
             assert result.confidence == 0.0
-            assert "Failed to capture camera frame" in result.message
+            assert result.difference_percent is None
+            assert result.outcome == "unavailable"
+            assert "camera capture failed" in result.message
+            from backend.app.services.bedcheck_ai import get_health
+
+            assert get_health()[1]["outcome"] == "unavailable"
+
+    @pytest.mark.asyncio
+    async def test_ai_deadline_includes_camera_capture(self):
+        """A stalled camera does not get the full AI request budget afterward."""
+        import asyncio
+
+        with patch.dict("sys.modules", {"cv2": cv2_mock, "numpy": np_mock}):
+            import importlib
+
+            import backend.app.services.plate_detection as pd_module
+
+            importlib.reload(pd_module)
+
+            async def stalled_capture(*args, **kwargs):
+                await asyncio.sleep(1)
+
+            with (
+                patch.object(pd_module, "capture_camera_image", side_effect=stalled_capture),
+                patch("backend.app.services.bedcheck_ai.check_bed_ai", AsyncMock()) as mock_check_bed_ai,
+                patch("backend.app.services.bedcheck_ai._dispatch_unavailable_transition"),
+            ):
+                result = await pd_module.check_plate_empty(
+                    1, "10.0.0.5", "code", "X1C", backend_override="ai", deadline_seconds=0.01
+                )
+
+            mock_check_bed_ai.assert_not_awaited()
+            assert result.outcome == "unavailable"
+            assert result.difference_percent is None
+            assert "timed out" in result.message
+
+    @pytest.mark.asyncio
+    async def test_ai_deadline_passes_only_remaining_budget_to_analysis(self):
+        """The request path receives time left after camera capture."""
+        with patch.dict("sys.modules", {"cv2": cv2_mock, "numpy": np_mock}):
+            import importlib
+
+            import backend.app.services.plate_detection as pd_module
+
+            importlib.reload(pd_module)
+
+            sentinel = pd_module.PlateDetectionResult(
+                is_empty=True, confidence=0.9, difference_percent=None, message="ai result", backend="ai"
+            )
+            with (
+                patch.object(pd_module, "capture_camera_image", AsyncMock(return_value=(b"frame", "built-in"))),
+                patch("backend.app.services.bedcheck_ai.check_bed_ai", AsyncMock(return_value=sentinel)) as mock_ai,
+            ):
+                result = await pd_module.check_plate_empty(
+                    1, "10.0.0.5", "code", "X1C", backend_override="ai", deadline_seconds=1.0
+                )
+
+            assert result is sentinel
+            assert 0 < mock_ai.await_args.kwargs["deadline_seconds"] < 1.0
+
+    @pytest.mark.asyncio
+    async def test_ai_deadline_also_bounds_pre_request_analysis(self):
+        """Slow settings or image work cannot escape the outer check budget."""
+        import asyncio
+
+        with patch.dict("sys.modules", {"cv2": cv2_mock, "numpy": np_mock}):
+            import importlib
+
+            import backend.app.services.plate_detection as pd_module
+
+            importlib.reload(pd_module)
+
+            async def stalled_analysis(*args, **kwargs):
+                await asyncio.sleep(1)
+
+            with (
+                patch.object(pd_module, "capture_camera_image", AsyncMock(return_value=(b"frame", "built-in"))),
+                patch("backend.app.services.bedcheck_ai.check_bed_ai", side_effect=stalled_analysis),
+                patch("backend.app.services.bedcheck_ai._dispatch_unavailable_transition"),
+            ):
+                result = await pd_module.check_plate_empty(
+                    1, "10.0.0.5", "code", "X1C", backend_override="ai", deadline_seconds=0.01
+                )
+
+            assert result.outcome == "unavailable"
+            assert result.difference_percent is None
+            assert "timed out" in result.message
 
     @pytest.mark.asyncio
     async def test_per_printer_override_ai_beats_global_opencv(self):
