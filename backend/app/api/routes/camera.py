@@ -1454,6 +1454,7 @@ async def check_plate_empty(
     """
     from backend.app.services.plate_detection import (
         check_plate_empty as do_check,
+        get_bedcheck_backend,
         is_plate_detection_available,
     )
     from backend.app.services.printer_manager import printer_manager
@@ -1466,7 +1467,14 @@ async def check_plate_empty(
             printer.external_camera_enabled and printer.external_camera_url and printer.external_camera_type
         )
 
-    if not is_plate_detection_available():
+    # AI inference does not use OpenCV. Resolve the same per-printer/global
+    # selector as check_plate_empty before applying the OpenCV-only 503 gate.
+    backend = (
+        printer.bedcheck_backend_override
+        if printer.bedcheck_backend_override in ("opencv", "ai")
+        else await get_bedcheck_backend()
+    )
+    if backend == "opencv" and not is_plate_detection_available():
         raise HTTPException(
             status_code=503,
             detail="Plate detection not available. Install opencv-python-headless to enable.",
