@@ -995,6 +995,42 @@ describe('SettingsPage', () => {
       );
     });
 
+    it('seeds a new sustained wait at 15 minutes when enabled from off', async () => {
+      const user = userEvent.setup();
+      let saved: Record<string, unknown> | null = null;
+      server.use(
+        http.get('/api/v1/settings/', () =>
+          HttpResponse.json({
+            ...mockSettings,
+            ambient_drying_enabled: true,
+            ambient_drying_sustained_minutes: 0,
+          })
+        ),
+        http.put('/api/v1/settings/', async ({ request }) => {
+          saved = (await request.json()) as Record<string, unknown>;
+          return HttpResponse.json({ ...mockSettings, ...saved });
+        })
+      );
+
+      render(<SettingsPage />);
+      await user.click(await screen.findByText('Workflow'));
+      const label = await screen.findByText('Require sustained humidity');
+      const row = label.closest('div')!.parentElement!;
+      const toggle = within(row).getByRole('checkbox');
+      expect(toggle).not.toBeChecked();
+
+      // Wait out the page's initial-load save suppression before toggling.
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      await user.click(toggle);
+
+      expect(toggle).toBeChecked();
+      expect(screen.getByDisplayValue('15')).toBeInTheDocument();
+      await waitFor(() => {
+        expect(saved).not.toBeNull();
+      }, { timeout: 3000 });
+      expect(saved!.ambient_drying_sustained_minutes).toBe(15);
+    });
+
     it('clearing the field does not snap it to a value mid-edit', async () => {
       const user = userEvent.setup();
       const input = await openWorkflowTab(user);

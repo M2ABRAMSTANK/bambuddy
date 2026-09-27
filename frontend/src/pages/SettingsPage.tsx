@@ -5722,7 +5722,7 @@ export function SettingsPage() {
                       checked={(localSettings.ambient_drying_sustained_minutes ?? 0) > 0}
                       onChange={(e) => {
                         setSustainedDraft(null);
-                        updateSetting('ambient_drying_sustained_minutes', e.target.checked ? 10 : 0);
+                        updateSetting('ambient_drying_sustained_minutes', e.target.checked ? 15 : 0);
                       }}
                       className="sr-only peer"
                     />
@@ -5739,7 +5739,7 @@ export function SettingsPage() {
                     type="number"
                     min="5"
                     max="240"
-                    value={sustainedDraft ?? String(localSettings.ambient_drying_sustained_minutes ?? 10)}
+                    value={sustainedDraft ?? String(localSettings.ambient_drying_sustained_minutes ?? 15)}
                     onChange={(e) => setSustainedDraft(e.target.value)}
                     onBlur={(e) => {
                       const parsed = parseInt(e.target.value, 10);
