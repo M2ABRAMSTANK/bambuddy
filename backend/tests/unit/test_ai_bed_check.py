@@ -204,8 +204,7 @@ class TestConfidenceClamp:
 
 class TestVerdictParsing:
     """_parse_verdict_json: clean JSON, markdown-fenced JSON, and the two
-    malformed-but-parseable shapes that must be treated as parse failures
-    (missing required key, non-bool is_empty)."""
+    malformed-but-parseable shapes that must be treated as parse failures."""
 
     def test_clean_json_parses(self):
         raw = '{"is_empty": true, "confidence": 0.9, "reason": "bare plate"}'
@@ -232,6 +231,26 @@ class TestVerdictParsing:
         raw = '{"is_empty": "yes", "confidence": 0.9, "reason": "string not bool"}'
         with pytest.raises(AiBedCheckError):
             _parse_verdict_json(raw)
+
+    @pytest.mark.parametrize(
+        "field_fragment",
+        [
+            '"confidence": null, "reason": "bare"',
+            '"confidence": "0.9", "reason": "bare"',
+            '"confidence": true, "reason": "bare"',
+            '"confidence": NaN, "reason": "bare"',
+            '"confidence": 0.9',
+            '"confidence": 0.9, "reason": null',
+            '"confidence": 0.9, "reason": 123',
+        ],
+    )
+    def test_malformed_confidence_or_reason_is_rejected(self, field_fragment):
+        with pytest.raises(AiBedCheckError, match="invalid response from AI backend"):
+            _parse_verdict_json('{"is_empty": true, ' + field_fragment + "}")
+
+    def test_numeric_percentage_remains_accepted_for_normalization(self):
+        data = _parse_verdict_json('{"is_empty": true, "confidence": 95, "reason": "bare"}')
+        assert _clamp_confidence(data["confidence"]) == 0.95
 
     def test_garbage_text_fails_to_parse(self):
         raw = "I cannot determine this from the image."
@@ -445,6 +464,20 @@ class TestFailOpenPerErrorClass:
     @pytest.mark.asyncio
     async def test_fails_open_on_missing_required_field_after_retry(self):
         resp = _mock_200_response({"choices": [{"message": {"content": '{"confidence": 0.9}'}}]})
+        client = _mock_client(post_result=resp)
+        with (
+            _patch_settings(),
+            patch("backend.app.services.bedcheck_ai.httpx.AsyncClient", return_value=client),
+        ):
+            result = await check_bed_ai(1, FAKE_JPEG, "built-in")
+        self._assert_fail_open_shape(result, "[built-in] AI bed-check unavailable: invalid response from AI backend")
+        assert client.post.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_fails_open_on_invalid_confidence_after_retry(self):
+        resp = _mock_200_response(
+            {"choices": [{"message": {"content": '{"is_empty": true, "confidence": null, "reason": "bare"}'}}]}
+        )
         client = _mock_client(post_result=resp)
         with (
             _patch_settings(),

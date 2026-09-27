@@ -13,6 +13,7 @@ import hashlib
 import io
 import json
 import logging
+import math
 import re
 import time
 from base64 import b64encode
@@ -259,7 +260,15 @@ def _build_messages(image_data: bytes) -> list[dict]:
 
 
 def _has_required_keys(data: object) -> bool:
-    return isinstance(data, dict) and isinstance(data.get("is_empty"), bool) and "confidence" in data
+    if not isinstance(data, dict) or not isinstance(data.get("is_empty"), bool):
+        return False
+    confidence = data.get("confidence")
+    return (
+        isinstance(confidence, (int, float))
+        and not isinstance(confidence, bool)
+        and math.isfinite(confidence)
+        and isinstance(data.get("reason"), str)
+    )
 
 
 def _parse_verdict_json(raw: str) -> dict:
@@ -268,9 +277,9 @@ def _parse_verdict_json(raw: str) -> dict:
     Tries a clean json.loads first, then falls back to extracting the first
     {...} block (handles models that wrap JSON in markdown fences despite
     instructions). Raises AiBedCheckError("invalid response from AI backend")
-    if neither parses, or the parsed object is missing required keys / has a
-    non-bool is_empty -- the caller treats this identically to a parse
-    failure and retries once.
+    if neither parses, or the parsed object has an invalid required field
+    (boolean verdict, finite numeric confidence, string reason). The caller
+    treats this identically to a parse failure and retries once.
     """
     try:
         data = json.loads(raw.strip())

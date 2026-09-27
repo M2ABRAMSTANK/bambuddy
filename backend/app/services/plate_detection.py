@@ -33,6 +33,15 @@ def _get_calibration_dir() -> Path:
     return settings.plate_calibration_dir
 
 
+def get_calibration_reference_count(printer_id: int) -> int:
+    """Count stored OpenCV references without requiring OpenCV to be installed."""
+    calibration_dir = _get_calibration_dir()
+    calibration_dir.mkdir(parents=True, exist_ok=True)
+    return sum(
+        (calibration_dir / f"printer_{printer_id}_ref_{i}.jpg").exists() for i in range(PlateDetector.MAX_REFERENCES)
+    )
+
+
 class PlateDetectionResult:
     """Result of plate detection analysis."""
 
@@ -421,7 +430,7 @@ class PlateDetector:
 
     def get_calibration_count(self, printer_id: int) -> int:
         """Get the number of calibration references for a printer."""
-        return len(self._get_reference_paths(printer_id))
+        return get_calibration_reference_count(printer_id)
 
     def has_calibration(self, printer_id: int, plate_type: str | None = None) -> bool:
         """Check if a printer has any calibration reference images."""

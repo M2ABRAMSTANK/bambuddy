@@ -532,17 +532,14 @@ class TestCameraAPI:
             "outcome": "ok",
             "message": "Objects detected",
         }
-        mock_detector = MagicMock()
-        mock_detector.get_calibration_count.return_value = 0
-        mock_detector.MAX_REFERENCES = 5
-
         with (
-            patch("backend.app.services.plate_detection.is_plate_detection_available", return_value=False),
+            # Patch the real constructor guard: the route previously
+            # instantiated PlateDetector after AI inference and returned 500.
+            patch("backend.app.services.plate_detection.OPENCV_AVAILABLE", False),
             patch(
                 "backend.app.services.plate_detection.get_bedcheck_backend", new_callable=AsyncMock
             ) as global_backend,
             patch("backend.app.services.plate_detection.check_plate_empty", new_callable=AsyncMock) as check,
-            patch("backend.app.services.plate_detection.PlateDetector", return_value=mock_detector),
         ):
             global_backend.return_value = "ai"
             check.return_value = mock_result
@@ -550,7 +547,10 @@ class TestCameraAPI:
 
         assert response.status_code == 200
         assert response.json()["backend"] == "ai"
+        assert response.json()["max_references"] == 5
+        assert response.json()["reference_count"] >= 0
         check.assert_awaited_once()
+        assert check.await_args.kwargs["backend_override"] == "ai"
         if override == "ai":
             global_backend.assert_not_awaited()
         else:
@@ -561,7 +561,7 @@ class TestCameraAPI:
     async def test_opencv_manual_check_still_requires_opencv(self, async_client: AsyncClient, printer_factory):
         printer = await printer_factory(bedcheck_backend_override="opencv")
         with (
-            patch("backend.app.services.plate_detection.is_plate_detection_available", return_value=False),
+            patch("backend.app.services.plate_detection.OPENCV_AVAILABLE", False),
             patch("backend.app.services.plate_detection.check_plate_empty", new_callable=AsyncMock) as check,
         ):
             response = await async_client.get(f"/api/v1/printers/{printer.id}/camera/check-plate")

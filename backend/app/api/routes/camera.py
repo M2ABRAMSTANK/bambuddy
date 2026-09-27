@@ -1453,8 +1453,10 @@ async def check_plate_empty(
           services/bedcheck_ai.py's health registry -- opencv always 'ok')
     """
     from backend.app.services.plate_detection import (
+        PlateDetector,
         check_plate_empty as do_check,
         get_bedcheck_backend,
+        get_calibration_reference_count,
         is_plate_detection_available,
     )
     from backend.app.services.printer_manager import printer_manager
@@ -1486,8 +1488,6 @@ async def check_plate_empty(
     if state and not state.chamber_light:
         light_warning = True
 
-    from backend.app.services.plate_detection import PlateDetector
-
     # Build ROI tuple from printer settings if available
     roi = None
     if all(
@@ -1517,17 +1517,18 @@ async def check_plate_empty(
         use_external=use_external,
         roi=roi,
         external_camera_snapshot_url=printer.external_camera_snapshot_url if printer.external_camera_enabled else None,
-        backend_override=printer.bedcheck_backend_override,
+        # Reuse the backend resolved for the availability gate above. A global
+        # setting change between two reads must not switch backends mid-check.
+        backend_override=backend,
     )
 
     # Get reference count for the response
-    detector = PlateDetector()
-    ref_count = detector.get_calibration_count(printer.id)
+    ref_count = get_calibration_reference_count(printer.id)
 
     response = result.to_dict()
     response["light_warning"] = light_warning
     response["reference_count"] = ref_count
-    response["max_references"] = detector.MAX_REFERENCES
+    response["max_references"] = PlateDetector.MAX_REFERENCES
     # Include current ROI in response
     if roi:
         response["roi"] = {"x": roi[0], "y": roi[1], "w": roi[2], "h": roi[3]}
