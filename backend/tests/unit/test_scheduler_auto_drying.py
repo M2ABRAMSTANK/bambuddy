@@ -2418,6 +2418,29 @@ class TestAmbientDryingSustainedDelay(_DryingTestBase):
     @pytest.mark.asyncio
     @patch("backend.app.services.print_scheduler.printer_manager")
     @patch("backend.app.services.print_scheduler.supports_drying", return_value=True)
+    async def test_disabling_all_auto_drying_drops_streak_before_early_return(self, mock_sd, mock_pm, scheduler):
+        """A quick disable/re-enable must start a fresh wait, even though the
+        disabled pass returns before visiting individual AMS units."""
+        mock_pm.get_status.return_value = self._state()
+        mock_pm.is_connected.return_value = True
+        mock_pm.get_model.return_value = "X1C"
+        mock_pm.send_drying_command.return_value = True
+        scheduler._is_printer_idle = MagicMock(return_value=True)
+        scheduler._auto_dry_above[self.UNIT_KEY] = {
+            "since": time.monotonic() - 360,
+            "last": time.monotonic() - 1,
+        }
+
+        await scheduler._check_auto_drying(self._db(sustained_minutes=5, ambient_enabled="false"), [], set())
+        assert self.UNIT_KEY not in scheduler._auto_dry_above
+
+        await scheduler._check_auto_drying(self._db(sustained_minutes=5), [], set())
+        mock_pm.send_drying_command.assert_not_called()
+        assert self.UNIT_KEY in scheduler._auto_dry_above
+
+    @pytest.mark.asyncio
+    @patch("backend.app.services.print_scheduler.printer_manager")
+    @patch("backend.app.services.print_scheduler.supports_drying", return_value=True)
     async def test_firmware_refusal_skips_before_the_wait_logs(self, mock_sd, mock_pm, scheduler, caplog):
         """A unit the firmware refuses to dry (dry_sf_reason set) hits its skip
         before the sustained wait, so it never logs "waiting" for a dry it was

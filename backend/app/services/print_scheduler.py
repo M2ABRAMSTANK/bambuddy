@@ -4186,6 +4186,11 @@ class PrintScheduler:
         ambient_drying_enabled = await self._get_bool_setting(db, "ambient_drying_enabled")
         print_drying_enabled = await self._get_bool_setting(db, "print_drying_enabled")
         sustained_minutes = await self._get_int_setting(db, "ambient_drying_sustained_minutes", default=0)
+        # Clear every streak as soon as the wait or all auto-drying is disabled.
+        # An early return (or an already-drying unit) may otherwise skip the
+        # per-unit cleanup and let a quick toggle-on inherit an old streak.
+        if sustained_minutes == 0 or (not queue_drying_enabled and not ambient_drying_enabled):
+            self._auto_dry_above.clear()
         if not queue_drying_enabled and not ambient_drying_enabled:
             # Stop active drying on all printers if both features disabled
             if self._drying_in_progress:
