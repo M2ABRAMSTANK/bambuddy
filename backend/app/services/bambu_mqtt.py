@@ -3643,6 +3643,11 @@ class BambuMQTTClient:
                 continue
             if ams_id < 0:
                 continue
+            # The firmware phase outranks the stalled-countdown heuristic even
+            # on a transient-zero frame, which the completion guard below skips.
+            # Clear a previously raised flag before that early continue.
+            if ams_unit.get("dry_status") in ACTIVE_DRY_STATUSES:
+                ams_unit["dry_countdown_stalled"] = False
             # Only evaluate the edge when this update carries an explicit
             # dry_time. An absent / unparseable value is NOT zero — treating
             # it as 0 lets a tray-only partial fake a drying-complete edge

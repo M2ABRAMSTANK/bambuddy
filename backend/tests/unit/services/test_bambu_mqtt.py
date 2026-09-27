@@ -6463,6 +6463,18 @@ class TestDryCountdownStall:
         mqtt_client._handle_ams_data(frame)
         assert self._unit(mqtt_client)["dry_countdown_stalled"] is False
 
+    def test_active_phase_clears_stall_on_transient_zero(self, mqtt_client):
+        """A Checking/Drying phase is authoritative even when its transient
+        dry_time=0 frame is ignored for completion-edge tracking (#2759)."""
+        mqtt_client._handle_ams_data({"ams": [{"id": "0", "dry_time": 720, "tray": []}]})
+        mqtt_client._test_clock["now"] += 151
+        mqtt_client._handle_ams_data({"ams": [{"id": "0", "dry_time": 720, "tray": []}]})
+        assert self._unit(mqtt_client)["dry_countdown_stalled"] is True
+
+        mqtt_client._handle_ams_data({"ams": [{"id": "0", "dry_time": 0, "info": "20", "tray": []}]})
+        assert self._unit(mqtt_client)["dry_countdown_stalled"] is False
+        assert mqtt_client._previous_dry_times[0] == 720
+
     def test_fresh_start_gets_grace_before_flagging(self, mqtt_client):
         mqtt_client._handle_ams_data({"ams": [{"id": "0", "dry_time": 0, "tray": []}]})
         mqtt_client._test_clock["now"] += 30
