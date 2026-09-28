@@ -276,12 +276,12 @@ describe('PrintersPage - parked drying command is not shown as an active cycle',
     );
   });
 
-  it('shows "Drying not started" instead of the active badge when the countdown is stalled', async () => {
+  it('shows "Drying not running" instead of the active badge when the countdown is stalled', async () => {
     server.use(http.get('/api/v1/printers/:id/status', () => HttpResponse.json(STALLED)));
 
     render(<PrintersPage />);
 
-    expect((await screen.findAllByText('Drying not started')).length).toBeGreaterThan(0);
+    expect((await screen.findAllByText('Drying not running')).length).toBeGreaterThan(0);
     // The active-cycle claims are gone: no "Drying" badge text, no countdown.
     expect(screen.queryByText('12h 0m left')).not.toBeInTheDocument();
   });
@@ -292,6 +292,6 @@ describe('PrintersPage - parked drying command is not shown as an active cycle',
     render(<PrintersPage />);
 
     expect((await screen.findAllByText(/12h 0m/)).length).toBeGreaterThan(0);
-    expect(screen.queryByText('Drying not started')).not.toBeInTheDocument();
+    expect(screen.queryByText('Drying not running')).not.toBeInTheDocument();
   });
 });

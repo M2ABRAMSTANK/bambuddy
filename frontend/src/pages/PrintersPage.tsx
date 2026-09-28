@@ -5491,16 +5491,16 @@ function PrinterCard({
                                 </div>
                               )}
                             </div>
-                            {/* Drying status bar. A dry_time the firmware set but
-                                whose countdown never started ticking (accepted-but-
-                                parked command — e.g. an H2D mid-print already powering
-                                other drying) is shown as "not started", not as an
+                            {/* Drying status bar. A dry_time whose countdown is not
+                                ticking, with no active drying phase (a parked command —
+                                e.g. an H2D mid-print already powering other drying — or
+                                a paused cycle), is shown as "not running", not as an
                                 active cycle: the amber badge claiming a running dry
                                 that the AMS never began is how this was found. */}
                             {ams.dry_time > 0 && ams.dry_countdown_stalled && (
-                              <div className="flex items-center gap-2 rounded-lg bg-slate-100 dark:bg-slate-500/10 px-2 py-1 text-[length:var(--pc-t9,9px)]" title={t('printers.drying.notStartedHint')}>
+                              <div className="flex items-center gap-2 rounded-lg bg-slate-100 dark:bg-slate-500/10 px-2 py-1 text-[length:var(--pc-t9,9px)]" title={t('printers.drying.notRunningHint')}>
                                 <Hourglass className="w-[var(--pc-i3,0.75rem)] h-[var(--pc-i3,0.75rem)] text-slate-500 dark:text-slate-400 shrink-0" />
-                                <span className="text-slate-600 dark:text-slate-300 font-medium">{t('printers.drying.notStarted')}</span>
+                                <span className="text-slate-600 dark:text-slate-300 font-medium">{t('printers.drying.notRunning')}</span>
                                 {ams.dry_filament && (
                                   <span className="text-slate-500/90 dark:text-slate-400/80">
                                     {ams.dry_target_temp != null
@@ -6088,16 +6088,16 @@ function PrinterCard({
                                 </div>
                               )}
                             </div>
-                            {/* HT AMS drying status bar. Same not-started split as the
-                                standard-AMS bar above: a frozen countdown is a parked
-                                command, not a running cycle. */}
+                            {/* HT AMS drying status bar. Same not-running split as the
+                                standard-AMS bar above: a frozen countdown is not a
+                                running cycle. */}
                             {ams.dry_time > 0 && (
-                              <div className={`flex items-center gap-1.5 overflow-hidden whitespace-nowrap rounded-lg px-2 py-1 text-[length:var(--pc-t9,9px)] ${ams.dry_countdown_stalled ? 'bg-slate-100 dark:bg-slate-500/10' : 'bg-amber-50 dark:bg-amber-500/10'}`} title={ams.dry_countdown_stalled ? t('printers.drying.notStartedHint') : undefined}>
+                              <div className={`flex items-center gap-1.5 overflow-hidden whitespace-nowrap rounded-lg px-2 py-1 text-[length:var(--pc-t9,9px)] ${ams.dry_countdown_stalled ? 'bg-slate-100 dark:bg-slate-500/10' : 'bg-amber-50 dark:bg-amber-500/10'}`} title={ams.dry_countdown_stalled ? t('printers.drying.notRunningHint') : undefined}>
                                 {ams.dry_countdown_stalled
                                   ? <Hourglass className="w-[var(--pc-i3,0.75rem)] h-[var(--pc-i3,0.75rem)] text-slate-500 dark:text-slate-400 shrink-0" />
                                   : <Flame className="w-[var(--pc-i3,0.75rem)] h-[var(--pc-i3,0.75rem)] text-amber-600 dark:text-amber-400 shrink-0" />}
                                 {ams.dry_countdown_stalled && (
-                                  <span className="text-slate-600 dark:text-slate-300 text-[length:var(--pc-t8,8px)] font-medium truncate">{t('printers.drying.notStarted')}</span>
+                                  <span className="text-slate-600 dark:text-slate-300 text-[length:var(--pc-t8,8px)] font-medium truncate">{t('printers.drying.notRunning')}</span>
                                 )}
                                 {ams.dry_filament && (
                                   <span className={`${ams.dry_countdown_stalled ? 'text-slate-500/90 dark:text-slate-400/80' : 'text-amber-700/80 dark:text-amber-300/70'} text-[length:var(--pc-t8,8px)] truncate`}>
