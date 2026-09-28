@@ -4186,10 +4186,15 @@ class PrintScheduler:
         ambient_drying_enabled = await self._get_bool_setting(db, "ambient_drying_enabled")
         print_drying_enabled = await self._get_bool_setting(db, "print_drying_enabled")
         sustained_minutes = await self._get_int_setting(db, "ambient_drying_sustained_minutes", default=0)
-        # Clear every streak as soon as the wait or all auto-drying is disabled.
-        # An early return (or an already-drying unit) may otherwise skip the
-        # per-unit cleanup and let a quick toggle-on inherit an old streak.
-        if sustained_minutes == 0 or (not queue_drying_enabled and not ambient_drying_enabled):
+        # The wait belongs to ambient drying: the settings UI only shows it while
+        # ambient drying is on, so a value left behind when ambient is turned off
+        # must not keep delaying the one path that still reaches the wait gate
+        # without it (a mid-print start under print_drying).
+        sustained_wait_active = sustained_minutes > 0 and ambient_drying_enabled
+        # Clear every streak as soon as the wait is inactive. An early return (or
+        # an already-drying unit) may otherwise skip the per-unit cleanup and let
+        # a quick toggle-on inherit an old streak.
+        if not sustained_wait_active:
             self._auto_dry_above.clear()
         if not queue_drying_enabled and not ambient_drying_enabled:
             # Stop active drying on all printers if both features disabled
@@ -4437,7 +4442,7 @@ class PrintScheduler:
                     # a prolonged sensor silence.
                     if humidity is not None:
                         _above = self._auto_dry_above.pop(unit_key, None)
-                        if _above is not None and sustained_minutes > 0:
+                        if _above is not None and sustained_wait_active:
                             logger.info(
                                 "Auto-drying: printer %d AMS %d — humidity fell back to %s%% after "
                                 "%.0fs of the required %dm above the %d%% threshold; not drying",
@@ -4464,7 +4469,7 @@ class PrintScheduler:
                 # gates instead of stacking after them. Inert when the feature
                 # is off: no entries are written, and an entry left over from a
                 # toggle-off is dropped so it cannot seed a stale streak later.
-                if sustained_minutes > 0:
+                if sustained_wait_active:
                     _now = time.monotonic()
                     # Four missed scheduler passes, floored: a single slow pass
                     # must not void a streak, but the ceiling has to scale with
@@ -4555,10 +4560,9 @@ class PrintScheduler:
                 # a printer that happens to be printing is the same
                 # transient-vulnerable humidity trigger as on an idle one
                 # (proven live: a 2-point threshold crossing mid-print bought a
-                # parked 12h command). (ambient_drying_enabled is implied here
-                # for the non-mid-print path: a printer without scheduled items
-                # was already skipped above when ambient mode is off.)
-                if sustained_minutes > 0 and pid not in printers_with_scheduled:
+                # parked 12h command). Inactive when ambient drying is off, so a
+                # mid-print start under print_drying alone stays instant.
+                if sustained_wait_active and pid not in printers_with_scheduled:
                     _above = self._auto_dry_above.get(unit_key)
                     _waited = time.monotonic() - _above["since"] if _above else 0.0
                     if _waited < sustained_minutes * 60:

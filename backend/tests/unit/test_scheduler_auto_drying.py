@@ -2284,6 +2284,40 @@ class TestAmbientDryingSustainedDelay(_DryingTestBase):
         await scheduler._check_auto_drying(db, [item], {1})
         mock_pm.send_drying_command.assert_called_once_with(1, 0, 40, 12, mode=1, filament="PLA")
 
+    @pytest.mark.asyncio
+    @patch("backend.app.services.print_scheduler.printer_manager")
+    async def test_stored_wait_is_inert_while_ambient_drying_is_off(self, mock_pm, scheduler):
+        """The settings UI hides the wait while ambient drying is off, so a value
+        left behind must not keep delaying a mid-print start under print_drying
+        (queue mode on, no scheduled item): that start stays instant, and no
+        streak entry is written for it."""
+        state = self._state()
+        state.state = "RUNNING"
+        mock_pm.get_status.return_value = state
+        mock_pm.is_connected.return_value = True
+        mock_pm.get_model.return_value = "H2D"
+        mock_pm.send_drying_command.return_value = True
+        scheduler._is_printer_idle = MagicMock(return_value=False)
+        state.firmware_version = "01.03.00.00"
+
+        settings_returns = {
+            "queue_drying_enabled": self._make_setting("true"),
+            "ambient_drying_enabled": self._make_setting("false"),
+            "print_drying_enabled": self._make_setting("true"),
+            "ambient_drying_sustained_minutes": self._make_setting("15"),
+            "ams_humidity_fair": self._make_setting("60"),
+            "queue_drying_block": self._make_setting("false"),
+            "drying_presets": None,
+        }
+        db = AsyncMock()
+        db.execute = AsyncMock(side_effect=self._make_db_side_effect(settings_returns))
+        # A streak left over from when ambient drying was on is dropped too.
+        scheduler._auto_dry_above[self.UNIT_KEY] = {"since": time.monotonic(), "last": time.monotonic()}
+
+        await scheduler._check_auto_drying(db, [], {1})
+        mock_pm.send_drying_command.assert_called_once_with(1, 0, 40, 12, mode=1, filament="PLA")
+        assert scheduler._auto_dry_above == {}
+
     @patch("backend.app.services.print_scheduler.printer_manager")
     def test_sync_drying_state_prunes_streaks_of_vanished_printers(self, mock_pm, scheduler):
         """A printer that has gone away takes its streak with it — a deleted and
