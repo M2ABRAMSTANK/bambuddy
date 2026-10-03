@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 import paho.mqtt.client as mqtt
 
 from backend.app.services.hms_actions import HMSAction, get_actions_for_error_code
-from backend.app.services.hms_errors import describe_fault
+from backend.app.services.hms_errors import alert_level_from_print_error, describe_fault
 from backend.app.utils.ams_drying import ACTIVE_DRY_STATUSES, DRY_COUNTDOWN_STALL_SECONDS
 from backend.app.utils.ams_humidity import ams_humidity_percent
 from backend.app.utils.paho_teardown import retire_paho_client
@@ -703,12 +703,14 @@ class HMSError:
     code: str
     attr: int  # Attribute value for constructing wiki URL
     module: int
-    severity: int  # 1=fatal, 2=serious, 3=common, 4=info
+    # Bambu's alert level: 1 error (task stopped), 2 warning (task paused),
+    # 3 notification, 0 invalid. From `code >> 16` for `hms[]` faults, and from
+    # the error's first hex digit for `print_error` (#2728).
+    severity: int
     # The bundled catalogue's sentence for this fault, resolved once here so
     # every surface that reports it — the status response, the WebSocket
     # broadcast, the completion payload, notifications — says the same thing.
-    # None when the catalogue does not cover the code; `describe_fault` documents
-    # the lookup and why the lossy `hms[]` collapse is kept as it was.
+    # None when Bambu publishes no text for the code; see `describe_fault`.
     # Replaces a `message` field that was never set or read anywhere.
     description: str | None = None
     # User-facing remediation actions from the bundled HMS catalog (e.g. "RESUME_PRINTING",
@@ -1430,6 +1432,9 @@ class BambuMQTTClient:
         # on both an X1C and an H2D (#2718). Filled by the MQTT thread, drained
         # by await_cali_ack.
         self._pending_cali_acks: dict[str, dict | None] = {}
+        # Acks for RFID re-reads (ams_get_rfid, and the M620 R gcode_line
+        # fallback), keyed the same way. Drained by ams_refresh_tray (#3206).
+        self._pending_rfid_acks: dict[str, dict | None] = {}
 
         # Identifies the one project_file *we* dispatched, so its echo on the
         # topic can be told apart from a slicer's. One-shot: consumed by the
@@ -2447,6 +2452,25 @@ class BambuMQTTClient:
                 # INFO level so the body lands in support bundles by default.
                 elif cmd == "ams_filament_drying":
                     logger.info("[%s] ams_filament_drying response: %s", self.serial_number, print_data)
+                # RFID re-reads are user-initiated and rare, and a refusal was
+                # invisible until #3206 (X1Plus answering FAIL / ERROR STATE).
+                # gcode_line acks are only of interest when they answer our
+                # M620 R fallback, so those are matched by sequence_id alone.
+                ack_seq = str(print_data.get("sequence_id", ""))
+                if (
+                    cmd in ("ams_get_rfid", "gcode_line")
+                    and ack_seq in self._pending_rfid_acks
+                    and "result" in print_data
+                ):
+                    logger.info(
+                        "[%s] %s response: result=%s reason=%s seq=%s",
+                        self.serial_number,
+                        cmd,
+                        print_data.get("result"),
+                        print_data.get("reason", ""),
+                        ack_seq,
+                    )
+                    self._pending_rfid_acks[ack_seq] = print_data
                 # Check for developer mode probe response
                 if (
                     cmd == "ams_filament_setting"
@@ -4857,13 +4881,20 @@ class BambuMQTTClient:
                             attr = int(attr.replace("0x", ""), 16) if attr else 0
                         if isinstance(code, str):
                             code = int(code.replace("0x", ""), 16) if code else 0
-                        # Severity is in attr byte 1 (bits 8-15)
-                        severity = (attr >> 8) & 0xF
+                        # attr is module, module no., part, part no. (a byte each);
+                        # code is the alert level (high 16 bits) then the error
+                        # (low 16). The level is 1 error (task stopped), 2 warning
+                        # (task paused), 3 notification; 0 is invalid. This is how
+                        # Bambu Studio decodes it (DevHMSItem::parse_hms_info). It
+                        # used to be read from attr bits 8-15, which is the part
+                        # byte (#2728).
+                        severity = (code >> 16) & 0xFFFF
                         # Module is in attr byte 3 (bits 24-31)
                         module = (attr >> 24) & 0xFF
-                        # Skip non-error status codes — all real HMS errors
-                        # have code >= 0x4000. Lower values are status/phase
-                        # indicators that some firmware sends during normal printing.
+                        # Skip non-error status codes. A real fault has a level of
+                        # at least 1 in the high half, so its code is >= 0x10000
+                        # and clears this; lower values are status/phase
+                        # indicators some firmware sends during normal printing.
                         if code < 0x4000:
                             continue
                         # Skip user-action echoes — the printer firmware emits these
@@ -4874,11 +4905,11 @@ class BambuMQTTClient:
                         short_code = f"{(attr >> 16) & 0xFFFF:04X}_{code & 0xFFFF:04X}"
                         if short_code in _HMS_USER_ACTION_CODES:
                             continue
-                        # Catalog has both 8-char keys (base class) and 16-char keys
-                        # (specific variants). The full 16-char identifier preserves
-                        # the 32 bits of `attr_low` + `code_high` that the short_code
-                        # discards — that's the firmware's matching key, so try it
-                        # first and fall back to the short form.
+                        # The full 16-char identifier is the firmware's matching key
+                        # and the HMS catalogue's key for this kind of fault; the
+                        # short code discards the part and alert-level groups. The
+                        # action table still has some short-form entries, so that
+                        # lookup falls back to it.
                         full_code = f"{attr:08X}{code:08X}"
                         if full_code == HMS_MQTT_VERIFY_FAILED:
                             verify_failed = True
@@ -4890,11 +4921,13 @@ class BambuMQTTClient:
                                 code=f"0x{code:x}" if code else "0x0",
                                 attr=attr,
                                 module=module,
-                                severity=severity if severity > 0 else 2,
+                                # No fallback: 0 is Bambu's "invalid" level, and
+                                # promoting it would render it as a fault.
+                                severity=severity,
                                 actions=actions,
                                 job_id=self.state.subtask_id,
                                 full_code=full_code,
-                                description=describe_fault(full_code),
+                                description=describe_fault(full_code, self.serial_number[:3]),
                             )
                         )
             self._apply_mqtt_verify_state(verify_failed)
@@ -4964,13 +4997,15 @@ class BambuMQTTClient:
                                     code=f"0x{error:x}",
                                     attr=print_error,  # Store full value for display
                                     module=module >> 8,  # High byte of module (e.g., 0x05)
-                                    severity=3,  # Warning level for print_error
+                                    # print_error has no level field; its error
+                                    # number's first digit carries it instead.
+                                    severity=alert_level_from_print_error(error),
                                     actions=actions,
                                     job_id=job_id,
                                     # print_error is already 32-bit — `f"{print_error:08X}"`
                                     # is the firmware's matching key with no truncation.
                                     full_code=f"{print_error:08X}",
-                                    description=describe_fault(f"{print_error:08X}"),
+                                    description=describe_fault(f"{print_error:08X}", self.serial_number[:3]),
                                 )
                             )
 
@@ -5555,6 +5590,9 @@ class BambuMQTTClient:
                         "attr": e.attr,
                         "module": e.module,
                         "severity": e.severity,
+                        # Lets the queue's failure reason label an `hms[]` fault
+                        # with its full code rather than a lossy short one (#2728).
+                        "full_code": e.full_code,
                         # Carried so the queue's failure reason quotes the same
                         # sentence the status response and the broadcast do,
                         # rather than resolving the code a fourth time (#2926).
@@ -7699,8 +7737,18 @@ class BambuMQTTClient:
         logger.info("[%s] AMS control: %s", self.serial_number, action)
         return True
 
-    def ams_refresh_tray(self, ams_id: int, tray_id: int) -> tuple[bool, str]:
+    async def ams_refresh_tray(self, ams_id: int, tray_id: int) -> tuple[bool, str]:
         """Trigger RFID re-read for a specific AMS tray.
+
+        Sends ``ams_get_rfid`` and waits for the printer's answer. Firmware
+        that refuses it (#3206: X1Plus on base 01.08.02.00 answers ``FAIL`` /
+        ``ERROR STATE``) gets the legacy ``M620 R<global tray>`` gcode instead,
+        which is what Bambu Studio sends to printers without the new protocol.
+        The fallback only follows an explicit refusal, so firmware that takes
+        ``ams_get_rfid`` never sees it.
+
+        Success means the printer accepted the request, not that the tag was
+        read: the slot updating in the next push is the only proof of that.
 
         Args:
             ams_id: AMS unit ID (0-3, or 128 for H2D external tray)
@@ -7734,15 +7782,71 @@ class BambuMQTTClient:
         if (_a2l := a2l_lite_wire_ids(ams_id, tray_id)) is not None:
             wire_ams_id, wire_slot_id, _ = _a2l
 
-        # Use ams_get_rfid command to trigger RFID re-read
-        # This command is used by Bambu Studio to re-read the RFID tag
-        command = {
-            "print": {"command": "ams_get_rfid", "ams_id": wire_ams_id, "slot_id": wire_slot_id, "sequence_id": "0"}
-        }
-        self._client.publish(self.topic_publish, json.dumps(command), qos=1)
         logger.info("[%s] Triggering RFID re-read: AMS %s, slot %s", self.serial_number, ams_id, tray_id)
+        refused = await self._send_rfid_command(
+            {"command": "ams_get_rfid", "ams_id": wire_ams_id, "slot_id": wire_slot_id}
+        )
+        if refused is None:
+            return True, f"Refreshing AMS {ams_id} tray {tray_id}"
 
-        return True, f"Refreshing AMS {ams_id} tray {tray_id}"
+        # M620 R only for what Bambu Studio sends it to: a model older than the
+        # newer protocol, on one of the four regular AMS units (the only ones
+        # with a legacy global tray index). Never during a job either: a
+        # gcode_line would be executed inside the running print.
+        from backend.app.utils.printer_models import uses_legacy_rfid_refresh
+
+        if (
+            not 0 <= wire_ams_id <= 3
+            or not uses_legacy_rfid_refresh(self.model)
+            or self.state.state in _ACTIVE_PRINT_STATES
+        ):
+            return False, f"Printer refused the RFID refresh: {refused}"
+
+        logger.info(
+            "[%s] ams_get_rfid refused (%s), falling back to M620 R%s",
+            self.serial_number,
+            refused,
+            wire_ams_id * 4 + wire_slot_id,
+        )
+        legacy_refused = await self._send_rfid_command(
+            {"command": "gcode_line", "param": f"M620 R{wire_ams_id * 4 + wire_slot_id}\n"}
+        )
+        if legacy_refused is None:
+            return True, f"Refreshing AMS {ams_id} tray {tray_id} (legacy command)"
+        return False, f"Printer refused the RFID refresh: {legacy_refused}"
+
+    # The answer to ams_get_rfid was measured at 11ms in #3206's capture.
+    _rfid_ack_timeout: float = 3.0
+
+    async def _send_rfid_command(self, print_command: dict) -> str | None:
+        """Publish one RFID refresh command and wait for the printer's answer.
+
+        Returns the printer's reason when it answered ``FAIL``, else None.
+        No answer within ``_rfid_ack_timeout`` counts as accepted, because
+        silence is not evidence of refusal and older firmware may not answer
+        at all.
+        """
+        timeout = self._rfid_ack_timeout
+        self._sequence_id += 1
+        seq_id = str(self._sequence_id)
+        command = {"print": {**print_command, "sequence_id": seq_id}}
+        self._pending_rfid_acks[seq_id] = None
+        try:
+            self._client.publish(self.topic_publish, json.dumps(command), qos=1)
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                ack = self._pending_rfid_acks.get(seq_id)
+                if ack is not None:
+                    if str(ack.get("result", "")).lower() == "fail":
+                        return str(ack.get("reason", "") or "") or "printer reported failure"
+                    return None
+                await asyncio.sleep(0.05)
+        finally:
+            self._pending_rfid_acks.pop(seq_id, None)
+        logger.info(
+            "[%s] No answer to %s seq=%s within %.1fs", self.serial_number, print_command["command"], seq_id, timeout
+        )
+        return None
 
     def ams_set_filament_setting(
         self,

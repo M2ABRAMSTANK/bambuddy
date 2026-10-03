@@ -54,6 +54,7 @@ from backend.app.services.print_batch import (
     refresh_batch_status_for_item,
 )
 from backend.app.services.print_cost_estimate import estimate_queue_source_cost
+from backend.app.services.queue_position import lock_queue_positions, max_queue_position
 from backend.app.utils.printer_models import (
     is_gcode_compatible,
 )
@@ -615,7 +616,12 @@ async def list_queue(
             # Cross-model candidates (#671) and their files, for the card label.
             selectinload(PrintQueueItem.variants).selectinload(PrintQueueVariant.library_file),
         )
-        .order_by(PrintQueueItem.printer_id.nulls_first(), PrintQueueItem.position)
+        # The order the scheduler dispatches in (#3200), so the first pending
+        # item for a printer is the one it will start next -- which is what the
+        # printer card's "Next in queue" shows. Sorting by printer first put
+        # every "Any <model>" job (no printer_id) ahead of a job pinned to that
+        # printer, whatever their positions.
+        .order_by(PrintQueueItem.position, PrintQueueItem.id)
     )
     if user is not None and not can_read_all:
         query = query.where(PrintQueueItem.created_by_id == user.id)
@@ -1001,47 +1007,14 @@ async def add_to_queue(
         await db.flush()  # Get batch.id before creating items
         batch_id = batch.id
 
-    # Get queue scope for this printer (or for unassigned/model-based items).
-    if data.printer_id is not None:
-        queue_scope = (
-            PrintQueueItem.printer_id == data.printer_id,
-            PrintQueueItem.status == "pending",
-        )
-    else:
-        # For unassigned/model-based items, scope across all unassigned.
-        queue_scope = (
-            PrintQueueItem.printer_id.is_(None),
-            PrintQueueItem.status == "pending",
-        )
-
-    # Serialize concurrent queue inserts to the same scope (#1625-followup).
-    # The race: two concurrent ASAP inserts both compute MAX(position) before
-    # either commits; in an empty scope, both INSERT at position 1 (duplicate).
-    # In a non-empty scope, Postgres's row-level locks on the UPDATE shift
-    # serialize naturally, but the empty-scope path has no rows to lock.
-    # A transaction-scoped advisory lock keyed on the printer_id closes that
-    # window; the lock is released automatically at commit/rollback. Different
-    # printers don't contend. SQLite serializes writes implicitly so this is a
-    # no-op there.
-    #
-    # Dialect is checked against the actual session binding, NOT the
-    # `is_sqlite()` helper, because the test fixture overrides `get_db` with a
-    # SQLite engine while `settings.database_url` still points at Postgres
-    # (the helper reads settings). Inspecting the connection directly is the
-    # right shape for any code that mutates SQL based on the live dialect.
-    from sqlalchemy import text
-
-    bind = db.get_bind()
-    if bind.dialect.name == "postgresql":
-        scope_key = data.printer_id if data.printer_id is not None else 0
-        # 1625 namespaces the lock so it can't collide with other advisory
-        # locks elsewhere in the codebase.
-        await db.execute(text("SELECT pg_advisory_xact_lock(1625, :k)"), {"k": scope_key})
+    # Positions are one sequence across every pending item (#3200), so a new
+    # item lands relative to the whole list, not to its printer's share of it.
+    queue_scope = (PrintQueueItem.status == "pending",)
+    await lock_queue_positions(db)
 
     insert_position = max(1, data.insert_position or 1)
     if data.insert_at_top or data.insert_position is not None:
-        result = await db.execute(select(func.max(PrintQueueItem.position)).where(*queue_scope))
-        max_pos = result.scalar() or 0
+        max_pos = await max_queue_position(db)
         insert_position = min(insert_position, max_pos + 1)
         await db.execute(
             update(PrintQueueItem)
@@ -1051,9 +1024,7 @@ async def add_to_queue(
         )
         start_position = insert_position
     else:
-        result = await db.execute(select(func.max(PrintQueueItem.position)).where(*queue_scope))
-        max_pos = result.scalar() or 0
-        start_position = max_pos + 1
+        start_position = await max_queue_position(db) + 1
 
     # Resolve print_time_seconds for SJF scheduling (cache on item at creation)
     cached_print_time = None
@@ -2412,7 +2383,9 @@ async def start_queue_item(
     deficit (#1496) is checked first — if the assigned spool can't satisfy
     a slot's required grams, the route returns ``409`` with the deficit
     payload so the caller can show a confirm dialog and retry with
-    ``skip_filament_check=true``.
+    ``skip_filament_check=true``. The same goes for a filament the printer has
+    no tray for at all (#2799): ``409`` with ``code=unmatched_filament`` and
+    the missing filaments.
     """
     user, can_modify_all = auth_result
 
@@ -2469,6 +2442,28 @@ async def start_queue_item(
                 detail={
                     "code": "insufficient_filament",
                     "deficit": [d.to_dict() for d in deficit],
+                },
+            )
+
+        # A filament the printer has no tray for at all (#2799). Without this,
+        # Start on an item the scheduler held for exactly that would release it
+        # only for the next pass to hold it again, and nothing would ever offer
+        # "Print Anyway".
+        from backend.app.services.print_scheduler import scheduler as _scheduler
+
+        # A convenience, not a gate: the scheduler holds the item again if the
+        # filament is still missing, so a failure here must not break Start.
+        try:
+            missing = await _scheduler.missing_filament_for_start(db, item)
+        except Exception:
+            logger.exception("Queue item %s: filament check before start failed", item_id)
+            missing = None
+        if missing:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "unmatched_filament",
+                    "missing": missing,
                 },
             )
 

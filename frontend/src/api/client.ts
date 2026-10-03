@@ -127,6 +127,23 @@ function buildSlicerUrlFilename(filename: string): string {
   return safe.toLowerCase().endsWith('.3mf') ? safe : `${safe}.3mf`;
 }
 
+/** POST JSON and return the response body as a Blob (label PDFs and images). */
+async function postForBlob(endpoint: string, data: unknown, signal?: AbortSignal): Promise<Blob> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
+  const response = await fetch(`${API_BASE}${endpoint}`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(data),
+    signal,
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(typeof error.detail === 'string' ? error.detail : `HTTP ${response.status}`);
+  }
+  return response.blob();
+}
+
 async function request<T>(
   endpoint: string,
   options: RequestInit = {}
@@ -429,7 +446,9 @@ export interface HMSError {
   code: string;
   attr: number;  // Attribute value for constructing wiki URL
   module: number;
-  severity: number;  // 1=fatal, 2=serious, 3=common, 4=info
+  // Bambu's alert level: 1 error (task stopped), 2 warning (task paused),
+  // 3 notification, 0 invalid (#2728).
+  severity: number;
   actions?: string[];  // List of user-facing action keys (e.g. "CHECK_FILAMENT")
   job_id?: string;  // Optional job ID for actions that require it (e.g. "CHECK_ASSISTANT")
   // Canonical hex identifier the firmware matches against — 8 chars for
@@ -437,11 +456,10 @@ export interface HMSError {
   // this back as HmsActionBody.print_error so we don't truncate the 64-bit
   // identifier into the silent-rejection short code (#1830).
   full_code?: string;
-  // The backend's resolved catalogue sentence for this fault (#2926). English
-  // only, and null when the catalogue does not cover the code. Resolved with the
-  // same lookup order this file's consumers use (full_code, then the G1_G4
-  // collapse), so it agrees with what HMSErrorModal renders — the modal still
-  // resolves its own text, and this is here for parity with the API.
+  // The backend's catalogue sentence for this fault (#2926), from the table
+  // generated out of Bambu Studio for this printer model (#2728). English only.
+  // Null when Bambu publishes no text for the code. The frontend has no table of
+  // its own: this field decides both the text and whether the fault counts.
   description?: string | null;
 }
 
@@ -1365,6 +1383,9 @@ export interface AppSettings {
   check_updates: boolean;
   check_printer_firmware: boolean;
   include_beta_updates: boolean;
+  // Announcements from the Bambuddy maintainers (a signed file on GitHub).
+  announcements_enabled?: boolean;
+  announcements_all_users?: boolean;
   // #1589: false hides the local username/password form on the login page;
   // BAMBUDDY_LOCAL_LOGIN=true on the server flips the reported value back to
   // true so the env-var recovery path is visible to the SPA.
@@ -2743,7 +2764,7 @@ export interface PrintQueueItemCreate {
   require_previous_success?: boolean;
   auto_off_after?: boolean;
   manual_start?: boolean;  // Requires manual trigger to start (staged)
-  insert_at_top?: boolean;  // Insert ahead of other pending items in the same queue scope
+  insert_at_top?: boolean;  // Insert ahead of other pending items (one queue order across all printers, #3200)
   insert_position?: number | null;  // 1-indexed insertion position for priority queueing
   // PrintModal "Print Anyway" on the deficit warning — persisted so the
   // scheduler doesn't immediately re-flag this item (#1698-followup).
@@ -2830,6 +2851,8 @@ export interface PrintBatchDispatchRequest {
 
 export interface PrintQueueItemUpdate {
   printer_id?: number | null;  // null = unassign
+  // A deliberate filament substitution in the mapping (#2799); see PrintModal.
+  skip_filament_check?: boolean;
   target_model?: string | null;  // Target printer model (mutually exclusive with printer_id)
   target_location?: string | null;  // Target location filter (only used with target_model)
   filament_overrides?: Array<{ slot_id: number; type: string; color: string; color_name?: string; tray_info_idx?: string; force_color_match?: boolean }> | null;
@@ -2964,6 +2987,9 @@ export interface SlotPresetMapping {
   tray_id: number;
   preset_id: string;
   preset_name: string;
+  // Filament id the slot was configured with alongside this preset; null for
+  // rows that predate it or whose writer did not know it (#3216).
+  tray_info_idx?: string | null;
 }
 
 // Filament types
@@ -2988,6 +3014,8 @@ export interface Filament {
 
 // Notification Provider types
 export type ProviderType = 'callmebot' | 'ntfy' | 'pushover' | 'telegram' | 'email' | 'discord' | 'webhook' | 'homeassistant' | 'bark';
+// How a Telegram provider collects the outcome verdict (#3046)
+export type TelegramVerdictMode = 'buttons' | 'reactions' | 'both';
 
 export interface NotificationProvider {
   id: number;
@@ -2995,6 +3023,7 @@ export interface NotificationProvider {
   provider_type: ProviderType;
   enabled: boolean;
   config: Record<string, unknown>;
+  attach_photo: boolean;
   // Print lifecycle events
   on_print_start: boolean;
   on_print_complete: boolean;
@@ -3021,6 +3050,7 @@ export interface NotificationProvider {
   on_plate_clear_required: boolean;
   // Post-print outcome confirmation (#1898)
   on_print_confirm_request: boolean;
+  telegram_verdict_mode: TelegramVerdictMode;
   // Bed cooled
   on_bed_cooled: boolean;
   on_ha_sensor_alert: boolean;
@@ -3062,6 +3092,7 @@ export interface NotificationProviderCreate {
   provider_type: ProviderType;
   enabled?: boolean;
   config: Record<string, unknown>;
+  attach_photo?: boolean;
   // Print lifecycle events
   on_print_start?: boolean;
   on_print_complete?: boolean;
@@ -3088,6 +3119,7 @@ export interface NotificationProviderCreate {
   on_plate_clear_required?: boolean;
   // Post-print outcome confirmation (#1898)
   on_print_confirm_request?: boolean;
+  telegram_verdict_mode?: TelegramVerdictMode;
   // Bed cooled
   on_bed_cooled?: boolean;
   on_ha_sensor_alert?: boolean;
@@ -3122,6 +3154,7 @@ export interface NotificationProviderUpdate {
   provider_type?: ProviderType;
   enabled?: boolean;
   config?: Record<string, unknown>;
+  attach_photo?: boolean;
   // Print lifecycle events
   on_print_start?: boolean;
   on_print_complete?: boolean;
@@ -3148,6 +3181,7 @@ export interface NotificationProviderUpdate {
   on_plate_clear_required?: boolean;
   // Post-print outcome confirmation (#1898)
   on_print_confirm_request?: boolean;
+  telegram_verdict_mode?: TelegramVerdictMode;
   // Bed cooled
   on_bed_cooled?: boolean;
   on_ha_sensor_alert?: boolean;
@@ -3434,6 +3468,7 @@ export interface GitHubBackupTriggerResponse {
 export interface NotificationTestRequest {
   provider_type: ProviderType;
   config: Record<string, unknown>;
+  attach_photo?: boolean;
 }
 
 export interface NotificationTestResponse {
@@ -3495,6 +3530,7 @@ export interface EventVariablesResponse {
   event_type: string;
   event_name: string;
   variables: string[];
+  supports_photo: boolean;
 }
 
 export interface TemplatePreviewRequest {
@@ -3600,11 +3636,48 @@ export type SpoolLabelTemplate =
   | 'avery_5160'
   | 'avery_l7160';
 
+// Mirror of backend.app.services.label_renderer.LabelField, in print order (#2981).
+export const SPOOL_LABEL_FIELDS = [
+  'brand',
+  'material',
+  'hex',
+  'name',
+  'location',
+  'material_number',
+  'temps',
+  'weight',
+  'note',
+  'added',
+  'qr',
+  'spool_id',
+] as const;
+export type SpoolLabelField = (typeof SPOOL_LABEL_FIELDS)[number];
+// Mirror of DEFAULT_LABEL_FIELDS: what a label carried before fields were selectable.
+export const DEFAULT_SPOOL_LABEL_FIELDS: SpoolLabelField[] = [
+  'brand',
+  'material',
+  'hex',
+  'name',
+  'location',
+  'qr',
+  'spool_id',
+];
+
 export interface PrintSpoolLabelsRequest {
   spool_ids: number[];
   template: SpoolLabelTemplate;
   monochrome: boolean;
   starting_position: number;
+  fields?: SpoolLabelField[];
+  format?: 'pdf' | 'png';
+  dpi?: 203 | 300 | 600;
+}
+
+export interface PreviewSpoolLabelRequest {
+  spool_id: number;
+  template: SpoolLabelTemplate;
+  monochrome: boolean;
+  fields: SpoolLabelField[];
 }
 
 export interface InventorySpool {
@@ -3625,6 +3698,9 @@ export interface InventorySpool {
   brand: string | null;
   label_weight: number;
   core_weight: number;
+  // Spoolman-backed inventory only: true when the spool has no tare of its
+  // own and core_weight is the filament type's. Absent for local spools (#2908).
+  core_weight_is_inherited?: boolean;
   core_weight_catalog_id: number | null;
   weight_used: number;
   // Anchor for the resettable "Total Consumed" display (#1390). The
@@ -3654,9 +3730,76 @@ export interface InventorySpool {
   // User-defined category + per-spool low-stock threshold override (#729).
   category: string | null;
   low_stock_threshold_pct: number | null;
+  // Internal material / article number (#2870) — the purchasing identifier
+  // shared by all spools of the same product.
+  material_number: string | null;
   k_profiles?: SpoolKProfile[];
   storage_location?: string | null;
   location_id?: number | null;
+  // Supplier assignments (#2988). Absent in Spoolman mode — Spoolman's
+  // vendor is the manufacturer, not the seller, so there is no mapping.
+  suppliers?: SpoolSupplierLink[];
+}
+
+// ── Suppliers (#2988) ──────────────────────────────────────────────────────
+
+/** Where filament is bought — distinct from brand (who made it). */
+export interface Supplier {
+  id: number;
+  name: string;
+  website: string | null;
+  customer_number: string | null;
+  note: string | null;
+  /** Spools referencing this supplier; a referenced supplier cannot be deleted. */
+  spool_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SupplierInput {
+  name: string;
+  website?: string | null;
+  customer_number?: string | null;
+  note?: string | null;
+}
+
+/** One spool-to-supplier assignment as written by the spool dialog. */
+export interface SpoolSupplierLinkInput {
+  supplier_id: number;
+  /** The supplier's own article number — NOT the internal material number. */
+  supplier_article_number?: string | null;
+  /** Quoted price for comparison — never the cost basis (spool.cost_per_kg). */
+  quoted_price_per_kg?: number | null;
+  /** Marks where this concrete spool was actually bought. */
+  is_purchase_source?: boolean;
+}
+
+export interface SpoolSupplierLink {
+  id: number;
+  supplier_id: number;
+  supplier_name: string;
+  supplier_article_number: string | null;
+  quoted_price_per_kg: number | null;
+  is_purchase_source: boolean;
+}
+
+/** Per-supplier inventory aggregate (#2988), purchase-source spools only. */
+export interface SupplierStats {
+  supplier_id: number;
+  supplier_name: string;
+  spool_count: number;
+  remaining_g: number;
+  consumed_g: number;
+  cost: number;
+}
+
+/** Per-material-number inventory aggregate (#2870). */
+export interface MaterialNumberStats {
+  material_number: string;
+  spool_count: number;
+  remaining_g: number;
+  consumed_g: number;
+  cost: number;
 }
 
 export interface SpoolmanBulkCreateResult {
@@ -4338,6 +4481,16 @@ export interface TwoFAVerifyRequest {
 export type SameOriginUrl = string & { readonly __brand: 'SameOriginUrl' };
 
 // OIDC interfaces
+/** What the unauthenticated GET /auth/oidc/providers returns (#3107): only
+ *  what the login page renders. The full provider, group sync config
+ *  included, needs the admin-only /auth/oidc/providers/all. */
+export interface OIDCProviderPublic {
+  id: number;
+  name: string;
+  has_icon: boolean;
+  is_autologin: boolean;
+}
+
 export interface OIDCProvider {
   id: number;
   name: string;
@@ -4349,6 +4502,9 @@ export interface OIDCProvider {
   auto_link_existing_accounts: boolean;
   email_claim: string;
   require_email_verified: boolean;
+  // #3107 — group sync. Empty mapping = sync off (default).
+  group_claim?: string;
+  group_mapping?: Record<string, string>;
   icon_url?: string | null;
   default_group_id?: number | null;
   // True when the backend has cached icon bytes for this provider.
@@ -4380,6 +4536,9 @@ export interface OIDCProviderCreate {
   auto_link_existing_accounts?: boolean;
   email_claim?: string;
   require_email_verified?: boolean;
+  // #3107 — group sync. Omit both to leave them unchanged on update.
+  group_claim?: string;
+  group_mapping?: Record<string, string>;
   icon_url?: string | null;
   default_group_id?: number | null;
   is_autologin?: boolean;  // #1589
@@ -4460,6 +4619,33 @@ export interface AuthStatus {
 
 // API functions
 export const api = {
+  // Overlay branding
+  getOverlayLogo: async (token: string | null, signal?: AbortSignal): Promise<Blob | null> => {
+    const endpoint = token ? `/overlay-branding/logo?token=${encodeURIComponent(token)}` : '/settings/overlay-logo';
+    const response = await fetch(`${API_BASE}${endpoint}`, {
+      signal, cache: 'no-store',
+      headers: !token && authToken ? { Authorization: `Bearer ${authToken}` } : {},
+    });
+    if (response.status === 404) return null;
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return response.blob();
+  },
+  uploadOverlayLogo: async (file: File): Promise<void> => {
+    const body = new FormData();
+    body.append('file', file);
+    const response = await fetch(`${API_BASE}/settings/overlay-logo`, {
+      method: 'POST', body,
+      headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      const detail = error?.detail;
+      const message = typeof detail === 'string' ? detail : detail?.message;
+      throw new Error(typeof message === 'string' && message ? message : `HTTP ${response.status}`);
+    }
+  },
+  deleteOverlayLogo: () => request<{ status: string }>('/settings/overlay-logo', { method: 'DELETE' }),
+
   // Authentication
   getAuthStatus: () => request<AuthStatus>('/auth/status'),
   setupAuth: (data: SetupRequest) =>
@@ -4589,7 +4775,7 @@ export const api = {
     request<{ message: string }>(`/auth/2fa/admin/${userId}`, { method: 'DELETE' }),
 
   // OIDC providers (public list)
-  getOIDCProviders: () => request<OIDCProvider[]>('/auth/oidc/providers'),
+  getOIDCProviders: () => request<OIDCProviderPublic[]>('/auth/oidc/providers'),
 
   // OIDC providers (admin)
   getOIDCProvidersAll: () => request<OIDCProvider[]>('/auth/oidc/providers/all'),
@@ -6268,8 +6454,8 @@ export const api = {
     request<Record<number, SlotPresetMapping>>(`/printers/${printerId}/slot-presets`),
   getSlotPreset: (printerId: number, amsId: number, trayId: number) =>
     request<SlotPresetMapping | null>(`/printers/${printerId}/slot-presets/${amsId}/${trayId}`),
-  saveSlotPreset: (printerId: number, amsId: number, trayId: number, presetId: string, presetName: string, presetSource = 'cloud') =>
-    request<SlotPresetMapping>(`/printers/${printerId}/slot-presets/${amsId}/${trayId}?preset_id=${encodeURIComponent(presetId)}&preset_name=${encodeURIComponent(presetName)}&preset_source=${encodeURIComponent(presetSource)}`, {
+  saveSlotPreset: (printerId: number, amsId: number, trayId: number, presetId: string, presetName: string, presetSource = 'cloud', trayInfoIdx?: string) =>
+    request<SlotPresetMapping>(`/printers/${printerId}/slot-presets/${amsId}/${trayId}?preset_id=${encodeURIComponent(presetId)}&preset_name=${encodeURIComponent(presetName)}&preset_source=${encodeURIComponent(presetSource)}${trayInfoIdx ? `&tray_info_idx=${encodeURIComponent(trayInfoIdx)}` : ''}`, {
       method: 'PUT',
     }),
   deleteSlotPreset: (printerId: number, amsId: number, trayId: number) =>
@@ -6310,6 +6496,9 @@ export const api = {
       kprofile_filament_id?: string;
       kprofile_setting_id?: string;
       k_value?: number;
+      // Orca Cloud profile the slot is set to; the backend looks up its
+      // filament id when tray_info_idx is empty (#3216).
+      orca_profile_id?: string;
     }
   ) => {
     const params = new URLSearchParams({
@@ -6334,7 +6523,17 @@ export const api = {
     if (config.k_value !== undefined && config.k_value > 0) {
       params.set('k_value', config.k_value.toString());
     }
-    return request<{ success: boolean; message: string }>(
+    if (config.orca_profile_id) {
+      params.set('orca_profile_id', config.orca_profile_id);
+    }
+    return request<{
+      success: boolean;
+      message: string;
+      // The filament id the slot was actually given.
+      tray_info_idx?: string;
+      // Why an Orca profile went out as the generic for its material, or "".
+      orca_fallback_reason?: '' | 'no_filament_id' | 'lookup_failed' | 'no_permission';
+    }>(
       `/printers/${printerId}/slots/${amsId}/${trayId}/configure?${params}`,
       { method: 'POST' }
     );
@@ -6616,36 +6815,16 @@ export const api = {
   unassignSpool: (printerId: number, amsId: number, trayId: number) =>
     request<{ status: string }>(`/inventory/assignments/${printerId}/${amsId}/${trayId}`, { method: 'DELETE' }),
   // ── Spool label printing (#809) ──────────────────────────────────────────
-  // Both endpoints return application/pdf. Frontend opens the resulting Blob
-  // in a new tab so the user can print or save from the browser's PDF viewer.
-  printSpoolLabels: async (data: PrintSpoolLabelsRequest): Promise<Blob> => {
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
-    const response = await fetch(`${API_BASE}/inventory/labels`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(data),
-    });
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({}));
-      throw new Error(error.detail || `HTTP ${response.status}`);
-    }
-    return response.blob();
-  },
-  printSpoolmanSpoolLabels: async (data: PrintSpoolLabelsRequest): Promise<Blob> => {
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
-    const response = await fetch(`${API_BASE}/spoolman/labels`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(data),
-    });
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({}));
-      throw new Error(error.detail || `HTTP ${response.status}`);
-    }
-    return response.blob();
-  },
+  // The print endpoints return a PDF, a PNG, or a ZIP of PNGs (#2981); the
+  // preview endpoints one PNG. Callers get the Blob and decide what to do.
+  printSpoolLabels: (data: PrintSpoolLabelsRequest): Promise<Blob> =>
+    postForBlob('/inventory/labels', data),
+  printSpoolmanSpoolLabels: (data: PrintSpoolLabelsRequest): Promise<Blob> =>
+    postForBlob('/spoolman/labels', data),
+  previewSpoolLabel: (data: PreviewSpoolLabelRequest, signal?: AbortSignal): Promise<Blob> =>
+    postForBlob('/inventory/labels/preview', data, signal),
+  previewSpoolmanSpoolLabel: (data: PreviewSpoolLabelRequest, signal?: AbortSignal): Promise<Blob> =>
+    postForBlob('/spoolman/labels/preview', data, signal),
   getSpoolCatalog: () =>
     request<SpoolCatalogEntry[]>('/inventory/catalog'),
   addCatalogEntry: (data: { name: string; weight: number }) =>
@@ -6658,6 +6837,36 @@ export const api = {
     request<{ deleted: number }>('/inventory/catalog/bulk-delete', { method: 'POST', body: JSON.stringify({ ids }) }),
   resetSpoolCatalog: () =>
     request<{ status: string }>('/inventory/catalog/reset', { method: 'POST' }),
+  // ── Suppliers (#2988) — inventory master data, Locations pattern ─────────
+  getSuppliers: () =>
+    request<Supplier[]>('/inventory/suppliers'),
+  createSupplier: (data: SupplierInput) =>
+    request<Supplier>('/inventory/suppliers', { method: 'POST', body: JSON.stringify(data) }),
+  updateSupplier: (id: number, data: Partial<SupplierInput>) =>
+    request<Supplier>(`/inventory/suppliers/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  deleteSupplier: (id: number) =>
+    request<{ status: string }>(`/inventory/suppliers/${id}`, { method: 'DELETE' }),
+  setSpoolSuppliers: (spoolId: number, links: SpoolSupplierLinkInput[]) =>
+    request<SpoolSupplierLink[]>(`/inventory/spools/${spoolId}/suppliers`, {
+      method: 'PUT',
+      body: JSON.stringify(links),
+    }),
+  // Spoolman parity: the assignment rows live Bambuddy-side, keyed by the
+  // remote spool id — same request/response shape as the built-in inventory.
+  setSpoolmanSpoolSuppliers: (spoolmanSpoolId: number, links: SpoolSupplierLinkInput[]) =>
+    request<SpoolSupplierLink[]>(`/spoolman/inventory/spools/${spoolmanSpoolId}/suppliers`, {
+      method: 'PUT',
+      body: JSON.stringify(links),
+    }),
+  // date_from/date_to scope the usage half only, so the widget can follow the
+  // dashboard timeframe; stock stays point-in-time.
+  getSupplierStats: (dateFrom?: string, dateTo?: string) => {
+    const params = new URLSearchParams();
+    if (dateFrom) params.set('date_from', dateFrom);
+    if (dateTo) params.set('date_to', dateTo);
+    const qs = params.toString();
+    return request<SupplierStats[]>(`/inventory/stats/suppliers${qs ? `?${qs}` : ''}`);
+  },
   getLocations: () =>
     request<StorageLocation[]>('/inventory/locations'),
   createLocation: (data: { name: string; identifier?: string | null }) =>
@@ -6709,6 +6918,15 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(data),
     }),
+  // Per-material-number inventory aggregate (#2870). The date range narrows
+  // the usage half only — stock is point-in-time.
+  getMaterialNumberStats: (options?: { dateFrom?: string; dateTo?: string }) => {
+    const params = new URLSearchParams();
+    if (options?.dateFrom) params.set('date_from', options.dateFrom);
+    if (options?.dateTo) params.set('date_to', options.dateTo);
+    const qs = params.toString();
+    return request<MaterialNumberStats[]>(`/inventory/stats/material-numbers${qs ? `?${qs}` : ''}`);
+  },
   getSpoolUsageHistory: (spoolId: number, limit = 50) =>
     request<SpoolUsageRecord[]>(`/inventory/spools/${spoolId}/usage?limit=${limit}`),
   getAllUsageHistory: (limit = 100, printerId?: number) =>
@@ -7645,6 +7863,11 @@ export const api = {
     request<BatchThumbnailResponse>('/library/generate-stl-thumbnails', {
       method: 'POST',
       body: JSON.stringify(options),
+    }),
+  combineLibraryFiles: (items: { file_id: number; copies: number }[], filename: string, folderId: number | null) =>
+    request<LibraryFileUploadResponse>('/library/files/combine', {
+      method: 'POST',
+      body: JSON.stringify({ items, filename, folder_id: folderId }),
     }),
   addLibraryFilesToQueue: (fileIds: number[]) =>
     request<AddToQueueResponse>('/library/files/add-to-queue', {
@@ -9019,6 +9242,42 @@ export const bugReportApi = {
     request<{ logs: string }>(`/bug-report/stop-logging?was_debug=${wasDebug}`, {
       method: 'POST',
     }),
+};
+
+export type AnnouncementLevel = 'info' | 'important' | 'critical';
+
+export interface AnnouncementText {
+  title: string;
+  body: string;
+  link_label?: string;
+}
+
+// One message from the Bambuddy maintainers. `texts` holds every language the
+// message was written in; English is always there.
+export interface Announcement {
+  id: string;
+  level: AnnouncementLevel;
+  texts: Record<string, AnnouncementText>;
+  link_url: string | null;
+  published_at: string | null;
+  expires_at: string | null;
+  // Past its expiry: kept as history, listed under "Earlier", never unread.
+  archived: boolean;
+  read: boolean;
+}
+
+// `visible` says whether this user may see announcements at all (switched on,
+// and admin or "show to all users"); it keeps the sidebar entry while nothing
+// is published.
+export interface AnnouncementList {
+  visible: boolean;
+  announcements: Announcement[];
+}
+
+export const announcementsApi = {
+  list: () => request<AnnouncementList>('/announcements'),
+  markRead: (id: string) =>
+    request<void>(`/announcements/${encodeURIComponent(id)}/read`, { method: 'POST' }),
 };
 
 export interface SponsorPromptCheckResponse {

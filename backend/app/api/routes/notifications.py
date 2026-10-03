@@ -7,6 +7,7 @@ from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import FileResponse
 from sqlalchemy import delete, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,10 +29,24 @@ from backend.app.schemas.notification import (
     NotificationTestResponse,
 )
 from backend.app.services.notification_service import notification_service
+from backend.app.services.telegram_reactions import telegram_reaction_poller
+from backend.app.utils.notification_photos import find_notification_photo
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/notifications", tags=["notifications"])
+
+
+async def _resync_reaction_poller():
+    """Start/stop Telegram reaction polls after a provider changed (#3046).
+
+    Never fails the request: the provider row is already saved, and the
+    poller catches up on the next restart at worst.
+    """
+    try:
+        await telegram_reaction_poller.sync()
+    except Exception as e:
+        logger.warning("Telegram reaction poller resync failed: %s", e)
 
 
 def _provider_to_dict(provider: NotificationProvider) -> dict:
@@ -42,6 +57,7 @@ def _provider_to_dict(provider: NotificationProvider) -> dict:
         "provider_type": provider.provider_type,
         "enabled": provider.enabled,
         "config": json.loads(provider.config) if isinstance(provider.config, str) else provider.config,
+        "attach_photo": provider.attach_photo,
         # Print lifecycle events
         "on_print_start": provider.on_print_start,
         "on_print_complete": provider.on_print_complete,
@@ -73,6 +89,8 @@ def _provider_to_dict(provider: NotificationProvider) -> dict:
         "on_plate_clear_required": provider.on_plate_clear_required,
         # Post-print outcome confirmation (#1898)
         "on_print_confirm_request": provider.on_print_confirm_request,
+        # Rows from before #3046 hold NULL here; "buttons" is what they did.
+        "telegram_verdict_mode": provider.telegram_verdict_mode or "buttons",
         # Bed cooled
         "on_bed_cooled": provider.on_bed_cooled,
         # First layer complete
@@ -140,6 +158,7 @@ async def create_notification_provider(
         provider_type=provider_data.provider_type.value,
         enabled=provider_data.enabled,
         config=json.dumps(provider_data.config),
+        attach_photo=provider_data.attach_photo,
         # Print lifecycle events
         on_print_start=provider_data.on_print_start,
         on_print_complete=provider_data.on_print_complete,
@@ -169,6 +188,7 @@ async def create_notification_provider(
         on_plate_clear_required=provider_data.on_plate_clear_required,
         # Post-print outcome confirmation (#1898)
         on_print_confirm_request=provider_data.on_print_confirm_request,
+        telegram_verdict_mode=provider_data.telegram_verdict_mode,
         # Bed cooled
         on_bed_cooled=provider_data.on_bed_cooled,
         # First layer complete
@@ -201,6 +221,7 @@ async def create_notification_provider(
     await db.refresh(provider)
 
     logger.info("Created notification provider: %s (%s)", provider.name, provider.provider_type)
+    await _resync_reaction_poller()
 
     return _provider_to_dict(provider)
 
@@ -218,7 +239,7 @@ async def test_notification_config(
 ):
     """Test notification configuration before saving."""
     success, message = await notification_service.send_test_notification(
-        test_request.provider_type.value, test_request.config, db
+        test_request.provider_type.value, test_request.config, db, attach_photo=test_request.attach_photo
     )
 
     return NotificationTestResponse(success=success, message=message)
@@ -242,7 +263,9 @@ async def test_all_notification_providers(
 
     for provider in providers:
         config = json.loads(provider.config) if isinstance(provider.config, str) else provider.config
-        success, message = await notification_service.send_test_notification(provider.provider_type, config, db)
+        success, message = await notification_service.send_test_notification(
+            provider.provider_type, config, db, attach_photo=provider.attach_photo
+        )
 
         # Update provider status
         if success:
@@ -404,6 +427,22 @@ async def clear_notification_logs(
     return {"deleted": deleted_count, "message": f"Deleted {deleted_count} logs older than {older_than_days} days"}
 
 
+@router.get("/photos/{filename}")
+async def get_notification_photo(filename: str):
+    """Serve an ad-hoc notification snapshot to HA, Bark or Slack.
+
+    They fetch this URL themselves with no session, so the unguessable
+    filename is the credential and opens this one photo only -- see
+    backend/app/utils/notification_photos.py. Anything that isn't a live
+    photo of exactly that shape is a 404.
+    """
+    photo_path = find_notification_photo(filename)
+    if photo_path is None:
+        raise HTTPException(404, "Photo not found")
+
+    return FileResponse(path=photo_path, media_type="image/jpeg", headers={"Cache-Control": "private, no-store"})
+
+
 # ============================================================================
 # Provider Instance Routes (parameterized - must come LAST)
 # ============================================================================
@@ -514,6 +553,7 @@ async def update_notification_provider(
     await db.refresh(provider)
 
     logger.info("Updated notification provider: %s", provider.name)
+    await _resync_reaction_poller()
 
     return _provider_to_dict(provider)
 
@@ -536,6 +576,7 @@ async def delete_notification_provider(
     await db.commit()
 
     logger.info("Deleted notification provider: %s", name)
+    await _resync_reaction_poller()
 
     return {"message": f"Notification provider '{name}' deleted"}
 
@@ -554,7 +595,9 @@ async def test_notification_provider(
         raise HTTPException(status_code=404, detail="Notification provider not found")
 
     config = json.loads(provider.config) if isinstance(provider.config, str) else provider.config
-    success, message = await notification_service.send_test_notification(provider.provider_type, config, db)
+    success, message = await notification_service.send_test_notification(
+        provider.provider_type, config, db, attach_photo=provider.attach_photo
+    )
 
     # Update provider status
     if success:

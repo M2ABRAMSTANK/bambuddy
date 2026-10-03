@@ -64,6 +64,7 @@ import { Gauge, Link2, Palette } from 'lucide-react';
 import { registerSettingsSearch, getSettingsSearchEntries } from '../lib/settingsSearch';
 import type { UsersSubTab } from '../lib/settingsSearch';
 import { availableEngines, hasEngineChoice, resolveEngine, type SliceEngineId } from '../lib/sliceEngines';
+import { NumberInput } from '../components/NumberInput';
 
 const validTabs = ['general', 'plugs', 'sensors', 'notifications', 'queue', 'filament', 'network', 'apikeys', 'virtual-printer', 'spoolbuddy', 'failure-detection', 'users', 'backup'] as const;
 type TabType = typeof validTabs[number];
@@ -1093,6 +1094,9 @@ export function SettingsPage() {
       // cannot read /settings. Nothing invalidated it, so a currency change
       // sat behind that query's own staleTime instead of showing up (#3123).
       queryClient.invalidateQueries({ queryKey: ['ui-flags'] });
+      // Switching announcements off (or to all users) changes who sees the
+      // sidebar entry and the banner; don't wait for the next poll.
+      queryClient.invalidateQueries({ queryKey: ['announcements'] });
       showToast(t('settings.toast.settingsSaved'), 'success');
     },
     onError: (error: Error) => {
@@ -1152,6 +1156,8 @@ export function SettingsPage() {
       baseline.check_updates !== localSettings.check_updates ||
       (baseline.check_printer_firmware ?? true) !== (localSettings.check_printer_firmware ?? true) ||
       (baseline.include_beta_updates ?? false) !== (localSettings.include_beta_updates ?? false) ||
+      (baseline.announcements_enabled ?? true) !== (localSettings.announcements_enabled ?? true) ||
+      (baseline.announcements_all_users ?? false) !== (localSettings.announcements_all_users ?? false) ||
       (baseline.local_login_enabled ?? true) !== (localSettings.local_login_enabled ?? true) ||
       baseline.notification_language !== localSettings.notification_language ||
       (baseline.bed_cooled_threshold ?? 35) !== (localSettings.bed_cooled_threshold ?? 35) ||
@@ -1268,6 +1274,8 @@ export function SettingsPage() {
         check_updates: localSettings.check_updates,
         check_printer_firmware: localSettings.check_printer_firmware,
         include_beta_updates: localSettings.include_beta_updates,
+        announcements_enabled: localSettings.announcements_enabled ?? true,
+        announcements_all_users: localSettings.announcements_all_users ?? false,
         local_login_enabled: localSettings.local_login_enabled,
         notification_language: localSettings.notification_language,
         bed_cooled_threshold: localSettings.bed_cooled_threshold,
@@ -1587,7 +1595,7 @@ export function SettingsPage() {
 
       {/* Tab Navigation + content: horizontal tabs on mobile, vertical rail on lg+ */}
       <div className="flex flex-col lg:flex-row gap-4 lg:gap-6">
-      <nav className="flex flex-wrap gap-1 border-b border-bambu-dark-tertiary lg:flex-col lg:flex-nowrap lg:gap-0 lg:border-b-0 lg:border-r lg:w-48 lg:flex-shrink-0 lg:self-start lg:sticky lg:top-4">
+      <nav className="flex flex-wrap gap-1 border-b border-bambu-dark-tertiary lg:flex-col lg:flex-nowrap lg:gap-0 lg:border-b-0 lg:border-r lg:w-60 lg:flex-shrink-0 lg:self-start lg:sticky lg:top-4">
         <button
           onClick={() => handleTabChange('general')}
           className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px lg:border-b-0 lg:border-l-2 lg:-ml-px lg:mb-0 lg:justify-start flex items-center gap-2 ${
@@ -1596,7 +1604,7 @@ export function SettingsPage() {
               : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
           }`}
         >
-          <SettingsIcon className="w-4 h-4" />
+          <SettingsIcon className="w-4 h-4 shrink-0" />
           {t('settings.tabs.general')}
         </button>
         <button
@@ -1607,10 +1615,10 @@ export function SettingsPage() {
               : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
           }`}
         >
-          <Plug className="w-4 h-4" />
+          <Plug className="w-4 h-4 shrink-0" />
           {t('settings.tabs.smartPlugs')}
           {smartPlugs && smartPlugs.length > 0 && (
-            <span className="text-xs bg-bambu-dark-tertiary px-1.5 py-0.5 rounded-full">
+            <span className="text-xs bg-bambu-dark-tertiary px-1.5 py-0.5 rounded-full shrink-0">
               {smartPlugs.length}
             </span>
           )}
@@ -1623,10 +1631,10 @@ export function SettingsPage() {
               : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
           }`}
         >
-          <Gauge className="w-4 h-4" />
+          <Gauge className="w-4 h-4 shrink-0" />
           {t('settings.tabs.sensors')}
           {(haSensors?.length ?? 0) + (locationHaSensors?.length ?? 0) > 0 && (
-            <span className="text-xs bg-bambu-dark-tertiary px-1.5 py-0.5 rounded-full">
+            <span className="text-xs bg-bambu-dark-tertiary px-1.5 py-0.5 rounded-full shrink-0">
               {(haSensors?.length ?? 0) + (locationHaSensors?.length ?? 0)}
             </span>
           )}
@@ -1639,10 +1647,10 @@ export function SettingsPage() {
               : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
           }`}
         >
-          <Bell className="w-4 h-4" />
+          <Bell className="w-4 h-4 shrink-0" />
           {t('settings.tabs.notifications')}
           {notificationProviders && notificationProviders.length > 0 && (
-            <span className="text-xs bg-bambu-dark-tertiary px-1.5 py-0.5 rounded-full">
+            <span className="text-xs bg-bambu-dark-tertiary px-1.5 py-0.5 rounded-full shrink-0">
               {notificationProviders.length}
             </span>
           )}
@@ -1655,7 +1663,7 @@ export function SettingsPage() {
               : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
           }`}
         >
-          <ListOrdered className="w-4 h-4" />
+          <ListOrdered className="w-4 h-4 shrink-0" />
           {t('settings.tabs.queue', 'Workflow')}
         </button>
         <button
@@ -1666,7 +1674,7 @@ export function SettingsPage() {
               : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
           }`}
         >
-          <Cylinder className="w-4 h-4" />
+          <Cylinder className="w-4 h-4 shrink-0" />
           {t('settings.tabs.filament')}
         </button>
         <button
@@ -1677,9 +1685,9 @@ export function SettingsPage() {
               : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
           }`}
         >
-          <Wifi className="w-4 h-4" />
+          <Wifi className="w-4 h-4 shrink-0" />
           {t('settings.tabs.network')}
-          <span className={`w-2 h-2 rounded-full ${mqttStatus?.enabled ? 'bg-green-400' : 'bg-gray-500'}`} />
+          <span className={`w-2 h-2 rounded-full shrink-0 ${mqttStatus?.enabled ? 'bg-green-400' : 'bg-gray-500'}`} />
         </button>
         <button
           onClick={() => handleTabChange('apikeys')}
@@ -1689,10 +1697,10 @@ export function SettingsPage() {
               : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
           }`}
         >
-          <Key className="w-4 h-4" />
+          <Key className="w-4 h-4 shrink-0" />
           {t('settings.tabs.apiKeys')}
           {apiKeys && apiKeys.length > 0 && (
-            <span className="text-xs bg-bambu-dark-tertiary px-1.5 py-0.5 rounded-full">
+            <span className="text-xs bg-bambu-dark-tertiary px-1.5 py-0.5 rounded-full shrink-0">
               {apiKeys.length}
             </span>
           )}
@@ -1705,9 +1713,9 @@ export function SettingsPage() {
               : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
           }`}
         >
-          <Printer className="w-4 h-4" />
+          <Printer className="w-4 h-4 shrink-0" />
           {t('settings.tabs.virtualPrinter')}
-          <span className={`w-2 h-2 rounded-full ${virtualPrinterRunning ? 'bg-green-400' : 'bg-gray-500'}`} />
+          <span className={`w-2 h-2 rounded-full shrink-0 ${virtualPrinterRunning ? 'bg-green-400' : 'bg-gray-500'}`} />
         </button>
         <button
           onClick={() => handleTabChange('spoolbuddy')}
@@ -1717,14 +1725,14 @@ export function SettingsPage() {
               : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
           }`}
         >
-          <Scale className="w-4 h-4" />
+          <Scale className="w-4 h-4 shrink-0" />
           {t('settings.tabs.spoolbuddy')}
           {spoolbuddyDeviceCount > 0 && (
-            <span className="text-xs bg-bambu-dark-tertiary px-1.5 py-0.5 rounded-full">
+            <span className="text-xs bg-bambu-dark-tertiary px-1.5 py-0.5 rounded-full shrink-0">
               {spoolbuddyDeviceCount}
             </span>
           )}
-          <span className={`w-2 h-2 rounded-full ${spoolbuddyAnyOnline ? 'bg-green-400' : 'bg-gray-500'}`} />
+          <span className={`w-2 h-2 rounded-full shrink-0 ${spoolbuddyAnyOnline ? 'bg-green-400' : 'bg-gray-500'}`} />
         </button>
         <button
           onClick={() => handleTabChange('failure-detection')}
@@ -1734,9 +1742,9 @@ export function SettingsPage() {
               : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
           }`}
         >
-          <ScanEye className="w-4 h-4" />
+          <ScanEye className="w-4 h-4 shrink-0" />
           {t('settings.tabs.failureDetection')}
-          <span className={`w-2 h-2 rounded-full ${obicoActive ? 'bg-green-400' : 'bg-gray-500'}`} />
+          <span className={`w-2 h-2 rounded-full shrink-0 ${obicoActive ? 'bg-green-400' : 'bg-gray-500'}`} />
         </button>
         <button
           onClick={() => handleTabChange('users')}
@@ -1746,10 +1754,10 @@ export function SettingsPage() {
               : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
           }`}
         >
-          <Users className="w-4 h-4" />
+          <Users className="w-4 h-4 shrink-0" />
           {t('settings.tabs.users')}
           {authEnabled && (
-            <span className="w-2 h-2 rounded-full bg-green-400" />
+            <span className="w-2 h-2 rounded-full shrink-0 bg-green-400" />
           )}
         </button>
         <button
@@ -1760,9 +1768,9 @@ export function SettingsPage() {
               : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
           }`}
         >
-          <Database className="w-4 h-4" />
+          <Database className="w-4 h-4 shrink-0" />
           {t('settings.tabs.backup')}
-          <span className={`w-2 h-2 rounded-full ${(cloudAuthStatus?.is_authenticated && githubBackupStatus?.configured && githubBackupStatus?.enabled) || settings?.local_backup_enabled ? 'bg-green-400' : 'bg-gray-500'}`} />
+          <span className={`w-2 h-2 rounded-full shrink-0 ${(cloudAuthStatus?.is_authenticated && githubBackupStatus?.configured && githubBackupStatus?.enabled) || settings?.local_backup_enabled ? 'bg-green-400' : 'bg-gray-500'}`} />
         </button>
       </nav>
       <div className="flex-1 min-w-0">
@@ -2415,14 +2423,13 @@ export function SettingsPage() {
                   <span className="absolute left-3 top-1/2 -translate-y-1/2 text-bambu-gray text-sm pointer-events-none">
                     {getCurrencySymbol(localSettings.currency)}
                   </span>
-                  <input
-                    type="number"
+                  <NumberInput
                     step="0.01"
-                    min="0"
+                    min={0}
                     value={localSettings.default_filament_cost}
-                    onChange={(e) =>
-                      updateSetting('default_filament_cost', parseFloat(e.target.value) || 0)
-                    }
+                    onChange={(v) => updateSetting('default_filament_cost', v)}
+                    integer={false}
+                    fallback={0}
                     style={{ paddingLeft: `${Math.max(2, getCurrencySymbol(localSettings.currency).length * 0.6 + 1)}rem` }}
                     className="w-full pr-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                   />
@@ -2436,14 +2443,13 @@ export function SettingsPage() {
                   <span className="absolute left-3 top-1/2 -translate-y-1/2 text-bambu-gray text-sm pointer-events-none">
                     {getCurrencySymbol(localSettings.currency)}
                   </span>
-                  <input
-                    type="number"
+                  <NumberInput
                     step="0.001"
-                    min="0"
+                    min={0}
                     value={localSettings.energy_cost_per_kwh}
-                    onChange={(e) =>
-                      updateSetting('energy_cost_per_kwh', parseFloat(e.target.value) || 0)
-                    }
+                    onChange={(v) => updateSetting('energy_cost_per_kwh', v)}
+                    integer={false}
+                    fallback={0}
                     style={{ paddingLeft: `${Math.max(2, getCurrencySymbol(localSettings.currency).length * 0.6 + 1)}rem` }}
                     className="w-full pr-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                   />
@@ -2649,13 +2655,14 @@ export function SettingsPage() {
                   {t('settings.lowDiskSpaceWarning')}
                 </label>
                 <div className="flex items-center gap-2">
-                  <input
-                    type="number"
-                    min="0.5"
-                    max="100"
+                  <NumberInput
+                    min={0.5}
+                    max={100}
                     step="0.5"
                     value={localSettings.library_disk_warning_gb ?? 5}
-                    onChange={(e) => updateSetting('library_disk_warning_gb', parseFloat(e.target.value) || 5)}
+                    onChange={(v) => updateSetting('library_disk_warning_gb', v)}
+                    integer={false}
+                    fallback={5}
                     className="w-24 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                   />
                   <span className="text-bambu-gray">GB</span>
@@ -3103,6 +3110,52 @@ export function SettingsPage() {
                   </p>
                 ) : null}
               </div>
+              <div className="border-t border-bambu-dark-tertiary pt-4">
+                <p className="text-xs font-medium text-bambu-gray uppercase tracking-wider mb-4">{t('announcements.title')}</p>
+              </div>
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-white">{t('settings.announcementsEnabled')}</p>
+                  <p className="text-sm text-bambu-gray">
+                    {t('settings.announcementsEnabledDesc')}{' '}
+                    <a
+                      href="https://wiki.bambuddy.cool/features/announcements/"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-bambu-green hover:underline"
+                    >
+                      {t('settings.announcementsLearnMore')}
+                    </a>
+                  </p>
+                </div>
+                <label className="relative inline-flex items-center cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={localSettings.announcements_enabled ?? true}
+                    onChange={(e) => updateSetting('announcements_enabled', e.target.checked)}
+                    className="sr-only peer"
+                  />
+                  <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
+                </label>
+              </div>
+              <div className={`flex items-center justify-between ${localSettings.announcements_enabled === false ? 'opacity-50' : ''}`}>
+                <div>
+                  <p className="text-white">{t('settings.announcementsAllUsers')}</p>
+                  <p className="text-sm text-bambu-gray">
+                    {t('settings.announcementsAllUsersDesc')}
+                  </p>
+                </div>
+                <label className="relative inline-flex items-center cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={localSettings.announcements_all_users ?? false}
+                    onChange={(e) => updateSetting('announcements_all_users', e.target.checked)}
+                    disabled={localSettings.announcements_enabled === false}
+                    className="sr-only peer"
+                  />
+                  <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
+                </label>
+              </div>
             </CardContent>
           </Card>
 
@@ -3452,12 +3505,12 @@ export function SettingsPage() {
                       <label className="block text-sm text-bambu-gray mb-1">
                         {t('settings.port')}
                       </label>
-                      <input
-                        type="number"
-                        min="1"
-                        max="65535"
+                      <NumberInput
+                        min={1}
+                        max={65535}
                         value={localSettings.mqtt_port ?? 1883}
-                        onChange={(e) => updateSetting('mqtt_port', Math.min(65535, Math.max(1, parseInt(e.target.value) || 1883)))}
+                        onChange={(v) => updateSetting('mqtt_port', v)}
+                        fallback={1883}
                         className="w-24 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                       />
                     </div>
@@ -5182,12 +5235,12 @@ export function SettingsPage() {
                   <label className="block text-xs text-bambu-gray mb-1">
                     {t('settings.staggerGroupSize', 'Group size')}
                   </label>
-                  <input
-                    type="number"
+                  <NumberInput
                     min={1}
                     max={50}
                     value={localSettings.stagger_group_size ?? 2}
-                    onChange={(e) => updateSetting('stagger_group_size', Math.max(1, Math.min(50, parseInt(e.target.value) || 1)))}
+                    onChange={(v) => updateSetting('stagger_group_size', v)}
+                    fallback={1}
                     className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:outline-none focus:border-bambu-green"
                   />
                   <p className="text-xs text-bambu-gray mt-1">
@@ -5198,12 +5251,12 @@ export function SettingsPage() {
                   <label className="block text-xs text-bambu-gray mb-1">
                     {t('settings.staggerInterval', 'Interval (minutes)')}
                   </label>
-                  <input
-                    type="number"
+                  <NumberInput
                     min={1}
                     max={60}
                     value={localSettings.stagger_interval_minutes ?? 5}
-                    onChange={(e) => updateSetting('stagger_interval_minutes', Math.max(1, Math.min(60, parseInt(e.target.value) || 1)))}
+                    onChange={(v) => updateSetting('stagger_interval_minutes', v)}
+                    fallback={1}
                     className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:outline-none focus:border-bambu-green"
                   />
                   <p className="text-xs text-bambu-gray mt-1">
@@ -5230,12 +5283,12 @@ export function SettingsPage() {
                 <label className="block text-xs text-bambu-gray mb-1">
                   {t('settings.concurrentUploadsLabel', 'Printers uploaded to at once')}
                 </label>
-                <input
-                  type="number"
+                <NumberInput
                   min={1}
                   max={16}
                   value={localSettings.queue_max_concurrent_uploads ?? 4}
-                  onChange={(e) => updateSetting('queue_max_concurrent_uploads', Math.max(1, Math.min(16, parseInt(e.target.value) || 1)))}
+                  onChange={(v) => updateSetting('queue_max_concurrent_uploads', v)}
+                  fallback={1}
                   className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:outline-none focus:border-bambu-green"
                 />
                 <p className="text-xs text-bambu-gray mt-1">
@@ -5281,12 +5334,12 @@ export function SettingsPage() {
                   <label className="block text-xs text-bambu-gray mb-1">
                     {t('settings.preheatMaxWait', 'Max wait (seconds)')}
                   </label>
-                  <input
-                    type="number"
+                  <NumberInput
                     min={60}
                     max={3600}
                     value={localSettings.preheat_max_wait_seconds ?? 900}
-                    onChange={(e) => updateSetting('preheat_max_wait_seconds', Math.max(60, Math.min(3600, parseInt(e.target.value) || 900)))}
+                    onChange={(v) => updateSetting('preheat_max_wait_seconds', v)}
+                    fallback={900}
                     className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:outline-none focus:border-bambu-green disabled:opacity-50"
                     disabled={!(localSettings.preheat_enabled ?? false)}
                   />
@@ -5298,12 +5351,12 @@ export function SettingsPage() {
                   <label className="block text-xs text-bambu-gray mb-1">
                     {t('settings.preheatSoak', 'Soak (seconds)')}
                   </label>
-                  <input
-                    type="number"
+                  <NumberInput
                     min={0}
                     max={1800}
                     value={localSettings.preheat_soak_seconds ?? 300}
-                    onChange={(e) => updateSetting('preheat_soak_seconds', Math.max(0, Math.min(1800, parseInt(e.target.value) || 0)))}
+                    onChange={(v) => updateSetting('preheat_soak_seconds', v)}
+                    fallback={0}
                     className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:outline-none focus:border-bambu-green disabled:opacity-50"
                     disabled={!(localSettings.preheat_enabled ?? false)}
                   />
@@ -5338,12 +5391,12 @@ export function SettingsPage() {
                   <label className="block text-xs text-bambu-gray mb-1">
                     {t('settings.keepWarmBedTemp', 'Keep-warm bed temperature (°C)')}
                   </label>
-                  <input
-                    type="number"
+                  <NumberInput
                     min={40}
                     max={110}
                     value={localSettings.queue_keep_warm_bed_temp ?? 90}
-                    onChange={(e) => updateSetting('queue_keep_warm_bed_temp', Math.max(40, Math.min(110, parseInt(e.target.value) || 90)))}
+                    onChange={(v) => updateSetting('queue_keep_warm_bed_temp', v)}
+                    fallback={90}
                     className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:outline-none focus:border-bambu-green disabled:opacity-50"
                     disabled={!(localSettings.preheat_enabled ?? false)}
                   />
@@ -5355,12 +5408,12 @@ export function SettingsPage() {
                   <label className="block text-xs text-bambu-gray mb-1">
                     {t('settings.keepWarmMaxMinutes', 'Stop keeping warm after (minutes)')}
                   </label>
-                  <input
-                    type="number"
+                  <NumberInput
                     min={5}
                     max={480}
                     value={localSettings.queue_keep_warm_max_minutes ?? 120}
-                    onChange={(e) => updateSetting('queue_keep_warm_max_minutes', Math.max(5, Math.min(480, parseInt(e.target.value) || 120)))}
+                    onChange={(v) => updateSetting('queue_keep_warm_max_minutes', v)}
+                    fallback={120}
                     className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:outline-none focus:border-bambu-green disabled:opacity-50"
                     disabled={!(localSettings.queue_keep_bed_warm ?? false) || !(localSettings.preheat_enabled ?? false) || !(localSettings.require_plate_clear ?? false)}
                   />
@@ -5821,8 +5874,8 @@ export function SettingsPage() {
                             <td className="py-1.5 pr-2 text-white font-medium">{fil}</td>
                             <td className="py-1 px-1">
                               <div className="flex items-center justify-end gap-1">
-                                <input type="number" min={30} max={65} value={preset.n3f}
-                                  onChange={e => updatePreset(fil, 'n3f', Math.max(1, parseInt(e.target.value) || 0))}
+                                <NumberInput min={30} max={65} value={preset.n3f}
+                                  onChange={v => updatePreset(fil, 'n3f', v)}
                                   className="w-14 px-1.5 py-1 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-center text-xs focus:border-amber-500/50 focus:outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                                 />
                                 <span className="text-bambu-gray">°C</span>
@@ -5830,8 +5883,8 @@ export function SettingsPage() {
                             </td>
                             <td className="py-1 px-1">
                               <div className="flex items-center gap-1">
-                                <input type="number" min={1} max={24} value={preset.n3f_hours}
-                                  onChange={e => updatePreset(fil, 'n3f_hours', Math.max(1, parseInt(e.target.value) || 0))}
+                                <NumberInput min={1} max={24} value={preset.n3f_hours}
+                                  onChange={v => updatePreset(fil, 'n3f_hours', v)}
                                   className="w-14 px-1.5 py-1 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-center text-xs focus:border-amber-500/50 focus:outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                                 />
                                 <span className="text-bambu-gray">h</span>
@@ -5839,8 +5892,8 @@ export function SettingsPage() {
                             </td>
                             <td className="py-1 px-1">
                               <div className="flex items-center justify-end gap-1">
-                                <input type="number" min={30} max={85} value={preset.n3s}
-                                  onChange={e => updatePreset(fil, 'n3s', Math.max(1, parseInt(e.target.value) || 0))}
+                                <NumberInput min={30} max={85} value={preset.n3s}
+                                  onChange={v => updatePreset(fil, 'n3s', v)}
                                   className="w-14 px-1.5 py-1 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-center text-xs focus:border-amber-500/50 focus:outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                                 />
                                 <span className="text-bambu-gray">°C</span>
@@ -5848,8 +5901,8 @@ export function SettingsPage() {
                             </td>
                             <td className="py-1 px-1">
                               <div className="flex items-center gap-1">
-                                <input type="number" min={1} max={24} value={preset.n3s_hours}
-                                  onChange={e => updatePreset(fil, 'n3s_hours', Math.max(1, parseInt(e.target.value) || 0))}
+                                <NumberInput min={1} max={24} value={preset.n3s_hours}
+                                  onChange={v => updatePreset(fil, 'n3s_hours', v)}
                                   className="w-14 px-1.5 py-1 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-center text-xs focus:border-amber-500/50 focus:outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                                 />
                                 <span className="text-bambu-gray">h</span>
@@ -6178,12 +6231,12 @@ export function SettingsPage() {
                         {t('settings.goodGreen')} ≤
                       </label>
                       <div className="flex items-center gap-2">
-                        <input
-                          type="number"
-                          min="0"
-                          max="100"
+                        <NumberInput
+                          min={0}
+                          max={100}
                           value={localSettings.ams_humidity_good ?? 40}
-                          onChange={(e) => updateSetting('ams_humidity_good', parseInt(e.target.value) || 40)}
+                          onChange={(v) => updateSetting('ams_humidity_good', v)}
+                          fallback={40}
                           className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                         />
                         <span className="text-bambu-gray">%</span>
@@ -6194,12 +6247,12 @@ export function SettingsPage() {
                         {t('settings.fairOrange')} ≤
                       </label>
                       <div className="flex items-center gap-2">
-                        <input
-                          type="number"
-                          min="0"
-                          max="100"
+                        <NumberInput
+                          min={0}
+                          max={100}
                           value={localSettings.ams_humidity_fair ?? 60}
-                          onChange={(e) => updateSetting('ams_humidity_fair', parseInt(e.target.value) || 60)}
+                          onChange={(v) => updateSetting('ams_humidity_fair', v)}
+                          fallback={60}
                           className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                         />
                         <span className="text-bambu-gray">%</span>
@@ -6237,13 +6290,14 @@ export function SettingsPage() {
                         {t('settings.goodBlue')} ≤
                       </label>
                       <div className="flex items-center gap-2">
-                        <input
-                          type="number"
+                        <NumberInput
                           step="0.5"
-                          min="0"
-                          max="60"
+                          min={0}
+                          max={60}
                           value={localSettings.ams_temp_good ?? 28}
-                          onChange={(e) => updateSetting('ams_temp_good', parseFloat(e.target.value) || 28)}
+                          onChange={(v) => updateSetting('ams_temp_good', v)}
+                          integer={false}
+                          fallback={28}
                           className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                         />
                         <span className="text-bambu-gray">°C</span>
@@ -6254,13 +6308,14 @@ export function SettingsPage() {
                         {t('settings.fairOrange')} ≤
                       </label>
                       <div className="flex items-center gap-2">
-                        <input
-                          type="number"
+                        <NumberInput
                           step="0.5"
-                          min="0"
-                          max="60"
+                          min={0}
+                          max={60}
                           value={localSettings.ams_temp_fair ?? 35}
-                          onChange={(e) => updateSetting('ams_temp_fair', parseFloat(e.target.value) || 35)}
+                          onChange={(v) => updateSetting('ams_temp_fair', v)}
+                          integer={false}
+                          fallback={35}
                           className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                         />
                         <span className="text-bambu-gray">°C</span>
@@ -6324,12 +6379,12 @@ export function SettingsPage() {
                       {t('settings.keepSensorHistory')}
                     </label>
                     <div className="flex items-center gap-2">
-                      <input
-                        type="number"
-                        min="1"
-                        max="365"
+                      <NumberInput
+                        min={1}
+                        max={365}
                         value={localSettings.ams_history_retention_days ?? 30}
-                        onChange={(e) => updateSetting('ams_history_retention_days', parseInt(e.target.value) || 30)}
+                        onChange={(v) => updateSetting('ams_history_retention_days', v)}
+                        fallback={30}
                         className="w-24 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                       />
                       <span className="text-bambu-gray">{t('common.days')}</span>

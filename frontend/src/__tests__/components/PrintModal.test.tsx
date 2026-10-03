@@ -1205,6 +1205,49 @@ describe('PrintModal', () => {
       await user.keyboard('5');
       expect(input.value).toBe('5');
     });
+
+    it('quantity can be erased and retyped instead of snapping back to 1 (#3182)', async () => {
+      const user = userEvent.setup();
+      render(
+        <PrintModal
+          mode="create"
+          archiveId={1}
+          archiveName="Benchy"
+          initialSelectedPrinterIds={[1]}
+          onClose={mockOnClose}
+          onSuccess={mockOnSuccess}
+        />
+      );
+
+      const input = screen.getByLabelText('Quantity') as HTMLInputElement;
+      await user.click(input);
+      await user.keyboard('{Backspace}');
+      expect(input.value).toBe('');
+
+      await user.keyboard('6');
+      expect(input.value).toBe('6');
+      expect(screen.getByText('Creates 6 queue items')).toBeInTheDocument();
+    });
+
+    it('an emptied quantity settles back to 1 when the field is left', async () => {
+      const user = userEvent.setup();
+      render(
+        <PrintModal
+          mode="create"
+          archiveId={1}
+          archiveName="Benchy"
+          initialSelectedPrinterIds={[1]}
+          onClose={mockOnClose}
+          onSuccess={mockOnSuccess}
+        />
+      );
+
+      const input = screen.getByLabelText('Quantity') as HTMLInputElement;
+      await user.click(input);
+      await user.keyboard('{Backspace}');
+      await user.tab();
+      expect(input.value).toBe('1');
+    });
   });
 
   describe('reprint G-code injection dispatch (#422 / auto-eject)', () => {
@@ -2653,5 +2696,100 @@ describe('PrintModal — override survives "Any model" -> "Specific Printer" (#3
     expect(posted[0].filament_overrides).toEqual([
       expect.objectContaining({ slot_id: 1, type: 'PLA', color: BONE_WHITE }),
     ]);
+  });
+});
+
+describe('PrintModal — a deliberate material substitution is acknowledged (#2799)', () => {
+  // The scheduler re-checks a stored mapping against the printer before
+  // dispatch, and a slot on a tray of another material is what a mapping meant
+  // for a different printer looks like. A user who picks such a tray by hand
+  // means it, so the dialog sends skip_filament_check, which the re-check
+  // honours.
+  const mockOnClose = vi.fn();
+  const PRINTERS = [
+    { id: 1, name: 'Printer 01', model: 'P2S', ip_address: '192.168.1.101', enabled: true, is_active: true },
+  ];
+
+  type Patched = { ams_mapping?: number[] | null; skip_filament_check?: boolean };
+  let patched: Patched[];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    patched = [];
+    server.use(
+      http.get('/api/v1/printers/', () => HttpResponse.json(PRINTERS)),
+      http.get('/api/v1/archives/:id/plates', () => HttpResponse.json({ is_multi_plate: false, plates: [] })),
+      http.get('/api/v1/archives/:id/filament-requirements', () =>
+        HttpResponse.json({ filaments: [{ slot_id: 1, type: 'PLA', color: '#8B4513', tray_info_idx: '', used_grams: 50 }] }),
+      ),
+      // Tray 0 holds the PLA the plate asks for, tray 1 a PETG.
+      http.get('/api/v1/printers/:id/status', () =>
+        HttpResponse.json({
+          connected: true,
+          state: 'IDLE',
+          ams: [
+            {
+              id: 0,
+              tray: [
+                { id: 0, tray_type: 'PLA', tray_color: '8B4513FF' },
+                { id: 1, tray_type: 'PETG', tray_color: 'FFFFFFFF' },
+              ],
+            },
+          ],
+          vt_tray: [],
+        }),
+      ),
+      http.get('/api/v1/printers/:id/assignments', () => HttpResponse.json([])),
+      http.patch('/api/v1/queue/:id', async ({ request }) => {
+        patched.push((await request.json()) as Patched);
+        return HttpResponse.json({ id: 1, status: 'pending' });
+      }),
+    );
+  });
+
+  const pinnedItem = () => createMockQueueItem({ printer_id: 1, target_model: null } as Partial<PrintQueueItem>);
+
+  const pickTrayAndSave = async (option: number) => {
+    const user = userEvent.setup();
+    render(<PrintModal mode="edit-queue-item" archiveId={1} archiveName="Job" queueItem={pinnedItem()} onClose={mockOnClose} />);
+
+    await user.click(await screen.findByText(/filament mapping/i));
+    await user.click(await screen.findByRole('combobox', { name: /printer slot for/i }));
+    const listbox = await screen.findByRole('listbox');
+    await user.click(within(listbox).getAllByRole('option')[option]);
+    await user.click(document.querySelector('button[type="submit"]') as HTMLElement);
+
+    await waitFor(() => expect(patched).toHaveLength(1));
+    return patched[0];
+  };
+
+  it('sends skip_filament_check when a slot is put on a tray of another material', async () => {
+    // Option 0 is the empty '-- Select slot --'; 1 is the PLA tray, 2 the PETG.
+    const saved = await pickTrayAndSave(2);
+
+    expect(saved.ams_mapping).toEqual([1]);
+    expect(saved.skip_filament_check).toBe(true);
+  });
+
+  it('does not treat a stored mapping the dialog opened with as a pick made here', async () => {
+    // A job queued before the dispatch re-check existed can carry a mapping
+    // made for another printer. Saving an unrelated edit must not enshrine it.
+    const user = userEvent.setup();
+    const item = createMockQueueItem({ printer_id: 1, target_model: null, ams_mapping: [1] } as Partial<PrintQueueItem>);
+    render(<PrintModal mode="edit-queue-item" archiveId={1} archiveName="Job" queueItem={item} onClose={mockOnClose} />);
+
+    await waitFor(() => expect(screen.getByText(/filament mapping/i)).toBeInTheDocument());
+    await user.click(document.querySelector('button[type="submit"]') as HTMLElement);
+
+    await waitFor(() => expect(patched).toHaveLength(1));
+    expect(patched[0].ams_mapping).toEqual([1]);
+    expect(patched[0].skip_filament_check).toBeUndefined();
+  });
+
+  it('sends nothing extra when the picked tray holds the material asked for', async () => {
+    const saved = await pickTrayAndSave(1);
+
+    expect(saved.ams_mapping).toEqual([0]);
+    expect(saved.skip_filament_check).toBeUndefined();
   });
 });

@@ -3,7 +3,7 @@ import { useMutation, useQueryClient, useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { X, Save, Loader2, Send, CheckCircle, XCircle } from 'lucide-react';
 import { api } from '../api/client';
-import type { NotificationProvider, NotificationProviderCreate, NotificationProviderUpdate, ProviderType } from '../api/client';
+import type { NotificationProvider, NotificationProviderCreate, NotificationProviderUpdate, ProviderType, TelegramVerdictMode } from '../api/client';
 import { Button } from './Button';
 import { Toggle } from './Toggle';
 
@@ -22,6 +22,7 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
   const [name, setName] = useState(provider?.name || '');
   const [providerType, setProviderType] = useState<ProviderType>(provider?.provider_type || 'email');
   const [printerId, setPrinterId] = useState<number | null>(provider?.printer_id || null);
+  const [attachPhoto, setAttachPhoto] = useState(provider?.attach_photo ?? true);
   const [quietHoursEnabled, setQuietHoursEnabled] = useState(provider?.quiet_hours_enabled || false);
   const [quietHoursStart, setQuietHoursStart] = useState(provider?.quiet_hours_start || '22:00');
   const [quietHoursEnd, setQuietHoursEnd] = useState(provider?.quiet_hours_end || '07:00');
@@ -48,6 +49,10 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
   // Post-print outcome confirmation (#1898). Defaults ON — it only fires for
   // prints that opted in per-job, so the toggle exists to mute a channel.
   const [onPrintConfirmRequest, setOnPrintConfirmRequest] = useState(provider?.on_print_confirm_request ?? true);
+  // Telegram only (#3046): inline link buttons, a thumbs reaction, or both.
+  const [telegramVerdictMode, setTelegramVerdictMode] = useState<TelegramVerdictMode>(
+    provider?.telegram_verdict_mode ?? 'buttons'
+  );
   const [onBedCooled, setOnBedCooled] = useState(provider?.on_bed_cooled ?? false);
   const [onHaSensorAlert, setOnHaSensorAlert] = useState(provider?.on_ha_sensor_alert ?? false);
   const [onLocationHaSensorAlert, setOnLocationHaSensorAlert] = useState(
@@ -102,7 +107,7 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
 
   // Test configuration mutation
   const testMutation = useMutation({
-    mutationFn: () => api.testNotificationConfig({ provider_type: providerType, config }),
+    mutationFn: () => api.testNotificationConfig({ provider_type: providerType, config, attach_photo: attachPhoto }),
     onSuccess: (result) => {
       setTestResult(result);
       setError(null);
@@ -188,6 +193,7 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
       provider_type: providerType,
       config: finalConfig,
       printer_id: printerId,
+      attach_photo: attachPhoto,
       quiet_hours_enabled: quietHoursEnabled,
       quiet_hours_start: quietHoursEnabled ? quietHoursStart : null,
       quiet_hours_end: quietHoursEnabled ? quietHoursEnd : null,
@@ -210,6 +216,7 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
       on_stock_break_alert: onStockBreakAlert,
       on_plate_clear_required: onPlateClearRequired,
       on_print_confirm_request: onPrintConfirmRequest,
+      telegram_verdict_mode: providerType === 'telegram' ? telegramVerdictMode : 'buttons',
       on_bed_cooled: onBedCooled,
       on_ha_sensor_alert: onHaSensorAlert,
       on_location_ha_sensor_alert: onLocationHaSensorAlert,
@@ -314,7 +321,14 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
         ];
       case 'homeassistant':
         return [
-          { key: 'service', label: 'Home Assistant Service', placeholder: 'notify.mobile_app_myphone', type: 'text', required: false },
+          {
+            key: 'service',
+            label: 'Home Assistant Service',
+            placeholder: 'notify.mobile_app_myphone',
+            type: 'text',
+            required: false,
+            help: t('notifications.haServiceHelp'),
+          },
           { key: 'data', label: 'Data (JSON, optional)', placeholder: '{"priority": "high", "ttl": 0, "channel": "3D Printing"}', type: 'textarea', required: false },
         ];
       case 'bark':
@@ -461,6 +475,24 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
                 )}
               </div>
             ))}
+            {providerType === 'telegram' && (
+              <div>
+                <label htmlFor="telegram-verdict-mode" className="block text-sm text-bambu-gray mb-1">
+                  {t('notifications.telegramVerdictMode')}
+                </label>
+                <select
+                  id="telegram-verdict-mode"
+                  value={telegramVerdictMode}
+                  onChange={(e) => setTelegramVerdictMode(e.target.value as TelegramVerdictMode)}
+                  className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                >
+                  <option value="buttons">{t('notifications.telegramVerdictModeButtons')}</option>
+                  <option value="reactions">{t('notifications.telegramVerdictModeReactions')}</option>
+                  <option value="both">{t('notifications.telegramVerdictModeBoth')}</option>
+                </select>
+                <p className="text-xs text-bambu-gray mt-1">{t('notifications.telegramVerdictModeHelp')}</p>
+              </div>
+            )}
           </div>
 
           {/* Test Button */}
@@ -523,6 +555,18 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
             <p className="text-xs text-bambu-gray mt-1">
               {t('notifications.onlyFromPrinter')}
             </p>
+          </div>
+
+          {/* Attach Photo */}
+          <div className="flex items-center justify-between">
+            <div>
+              <label className="text-sm text-white">{t('notifications.attachPhotoLabel')}</label>
+              <p className="text-xs text-bambu-gray">{t('notifications.attachPhotoDescription')}</p>
+            </div>
+            <Toggle
+              checked={attachPhoto}
+              onChange={setAttachPhoto}
+            />
           </div>
 
           {/* Quiet Hours */}

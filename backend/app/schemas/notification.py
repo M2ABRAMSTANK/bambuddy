@@ -1,7 +1,7 @@
 """Pydantic schemas for notification providers."""
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -29,6 +29,9 @@ class NotificationProviderBase(BaseModel):
     provider_type: ProviderType = Field(..., description="Type of notification provider")
     enabled: bool = Field(default=True, description="Whether notifications are enabled")
     config: dict[str, Any] = Field(..., description="Provider-specific configuration")
+    attach_photo: bool = Field(
+        default=True, description="Attach a camera snapshot to this provider's notifications when one is available"
+    )
 
     # Event triggers - print lifecycle
     on_print_start: bool = Field(default=False, description="Notify on print start")
@@ -86,6 +89,11 @@ class NotificationProviderBase(BaseModel):
     on_print_confirm_request: bool = Field(
         default=True,
         description="Notify with one-tap verdict links when a print that opted in asks for its outcome",
+    )
+    # How a Telegram provider collects the verdict (#3046). Ignored elsewhere.
+    telegram_verdict_mode: Literal["buttons", "reactions", "both"] = Field(
+        default="buttons",
+        description="Telegram only: answer the outcome prompt via inline buttons, a thumbs reaction, or both",
     )
 
     # Event triggers - Bed cooled
@@ -161,6 +169,7 @@ class NotificationProviderUpdate(BaseModel):
     provider_type: ProviderType | None = None
     enabled: bool | None = None
     config: dict[str, Any] | None = None
+    attach_photo: bool | None = None
 
     # Event triggers - print lifecycle
     on_print_start: bool | None = None
@@ -199,6 +208,7 @@ class NotificationProviderUpdate(BaseModel):
 
     # Event triggers - Post-print outcome confirmation (#1898)
     on_print_confirm_request: bool | None = None
+    telegram_verdict_mode: Literal["buttons", "reactions", "both"] | None = None
 
     # Event triggers - Bed cooled
     on_bed_cooled: bool | None = None
@@ -326,6 +336,9 @@ class NotificationTestRequest(BaseModel):
 
     provider_type: ProviderType
     config: dict[str, Any]
+    attach_photo: bool = Field(
+        default=True, description="Include a sample photo in the test, mirroring the provider's own toggle"
+    )
 
 
 class NotificationTestResponse(BaseModel):

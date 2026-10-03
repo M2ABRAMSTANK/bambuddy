@@ -17,7 +17,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile
 from fastapi.responses import FileResponse as FastAPIFileResponse
-from sqlalchemy import distinct, func, select
+from sqlalchemy import distinct, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -50,6 +50,7 @@ from backend.app.schemas.library import (
     BulkDeleteRequest,
     BulkDeleteResponse,
     ClientThumbnailResponse,
+    CombineFilesRequest,
     ExternalFolderCreate,
     FileDuplicate,
     FileListResponse,
@@ -657,8 +658,10 @@ async def save_3mf_bytes_to_library(
     thumbnail_path: str | None = None
     if ext == ".3mf":
         try:
+            # Off the event loop: the parser still decompresses the whole model
+            # entry, which for a combined plate is hundreds of MB (#3162).
             parser = ThreeMFParser(str(file_path))
-            raw_metadata = parser.parse()
+            raw_metadata = await asyncio.to_thread(parser.parse)
             thumb_data = raw_metadata.get("_thumbnail_data")
             thumb_ext = raw_metadata.get("_thumbnail_ext", ".png")
             if thumb_data:
@@ -813,11 +816,12 @@ def create_image_thumbnail(file_path: Path, thumbnails_dir: Path, max_size: int 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".tif"}
 
 # File types whose thumbnails are rendered client-side and uploaded back
-# (#2976). The server has no renderer for these formats — STEP would need
-# OpenCascade, PDF a rasteriser — so the browser posts its first preview
-# render to POST /files/{id}/preview-thumbnail instead. Kept to exactly
-# these types so the endpoint can never overwrite a server-generated
-# STL/3MF/G-code/image thumbnail.
+# (#2976). The server has no renderer for STEP (that would need OpenCascade)
+# or the spreadsheet types, so the browser posts its first preview render to
+# POST /files/{id}/preview-thumbnail instead. PDF is rendered server-side with
+# PDFium when it lands and stays here for a PDF that renderer cannot read.
+# Kept to exactly these types so the endpoint can never overwrite a
+# server-generated STL/3MF/G-code/image thumbnail.
 CLIENT_THUMBNAIL_TYPES = {"step", "stp", "pdf", "csv", "xlsx", "ods"}
 
 # Photos of the printed result (#3077): same allowlist and naming as the
@@ -835,9 +839,18 @@ MAX_PHOTO_BYTES = 10 * 1024 * 1024
 # 256px PNG (a few tens of KB); anything near this limit is not a thumbnail.
 MAX_CLIENT_THUMBNAIL_BYTES = 2 * 1024 * 1024
 
+# Upper bound on the *decoded* size, checked against the header before any
+# pixels are allocated: a few-KB PNG can declare 12000x7000 and still be under
+# PIL's own decompression-bomb limit, which would be ~340 MB of RGBA.
+MAX_CLIENT_THUMBNAIL_EDGE = 2048
 
-async def _backfill_external_stl_thumbnails(folder_ids: list[int]) -> None:
-    """Generate STL thumbnails for an external folder tree in the background.
+# What the endpoint stores. The grid renders at ~256px, so anything larger is
+# downscaled rather than kept.
+STORED_CLIENT_THUMBNAIL_EDGE = 512
+
+
+async def _backfill_external_thumbnails(folder_ids: list[int]) -> None:
+    """Generate STL and PDF thumbnails for an external folder tree in the background.
 
     Spawned via ``asyncio.create_task`` from ``scan_external_folder`` so the
     HTTP request can return as soon as the filesystem walk + folder/file rows
@@ -845,7 +858,9 @@ async def _backfill_external_stl_thumbnails(folder_ids: list[int]) -> None:
     the request open for many minutes (each file triggers a ``trimesh.load``
     + matplotlib render, ~1-5s each) and the FE modal times out before the
     final ``db.commit()`` runs — causing the original symptom in #1299 where
-    subdirectories never showed up because nothing got committed.
+    subdirectories never showed up because nothing got committed. PDFs are
+    faster (a PDFium page render) but a share holding hundreds of them would
+    still hold the request open, so they are rendered here too.
 
     Opens its own session because the request session is closed by the time
     this task starts running. Commits per-file so a worker restart mid-run
@@ -859,21 +874,29 @@ async def _backfill_external_stl_thumbnails(folder_ids: list[int]) -> None:
         result = await db.execute(
             LibraryFile.active().where(
                 LibraryFile.folder_id.in_(folder_ids),
-                LibraryFile.file_type == "stl",
+                LibraryFile.file_type.in_(("stl", "pdf")),
                 LibraryFile.thumbnail_path.is_(None),
             )
         )
-        stl_files = result.scalars().all()
-        if not stl_files:
+        target_files = result.scalars().all()
+        if not target_files:
             return
         logger.info(
-            "Backfilling STL thumbnails: %d file(s) across %d folder(s)",
-            len(stl_files),
+            "Backfilling STL/PDF thumbnails: %d file(s) across %d folder(s)",
+            len(target_files),
             len(folder_ids),
         )
-        for stl_file in stl_files:
-            abs_path = to_absolute_path(stl_file.file_path)
+        for target_file in target_files:
+            abs_path = to_absolute_path(target_file.file_path)
             if not abs_path or not abs_path.exists():
+                continue
+            if target_file.file_type == "pdf":
+                # generate_pdf_thumbnail never raises; an unreadable PDF
+                # returns None and keeps the browser-preview fallback.
+                thumb_path = await asyncio.to_thread(generate_pdf_thumbnail, abs_path, thumbnails_dir)
+                if thumb_path:
+                    target_file.thumbnail_path = to_relative_path(Path(thumb_path))
+                    await db.commit()
                 continue
             # Pre-skip files too small to contain even a single triangle.
             # Bulk-uploaded ZIPs of stub STLs would otherwise trigger one
@@ -889,7 +912,7 @@ async def _backfill_external_stl_thumbnails(folder_ids: list[int]) -> None:
                 logger.debug("STL thumbnail backfill skipped %s: %s", abs_path, exc)
                 continue
             if thumb_path:
-                stl_file.thumbnail_path = to_relative_path(Path(thumb_path))
+                target_file.thumbnail_path = to_relative_path(Path(thumb_path))
                 await db.commit()
 
 
@@ -1989,8 +2012,8 @@ async def scan_external_folder(
                 except Exception as e:
                     logger.debug("Failed to extract metadata from external 3mf %s: %s", filepath, e)
 
-            # STL thumbnails are deferred to a background task spawned after
-            # the scan's db.commit() — see _backfill_external_stl_thumbnails.
+            # STL and PDF thumbnails are deferred to a background task spawned
+            # after the scan's db.commit() — see _backfill_external_thumbnails.
             # Doing them inline would block the HTTP request for minutes on a
             # large NAS mount (#1299).
 
@@ -2007,14 +2030,6 @@ async def scan_external_folder(
             # Create thumbnail for image files
             if ext.lower() in IMAGE_EXTENSIONS and thumbnail_path is None:
                 thumbnail_path_str = create_image_thumbnail(filepath, get_library_thumbnails_dir())
-                if thumbnail_path_str:
-                    thumbnail_path = to_relative_path(Path(thumbnail_path_str))
-
-            # Render page one of a PDF so it has a thumbnail before anyone opens it
-            if file_type == "pdf" and thumbnail_path is None:
-                thumbnail_path_str = await asyncio.to_thread(
-                    generate_pdf_thumbnail, filepath, get_library_thumbnails_dir()
-                )
                 if thumbnail_path_str:
                     thumbnail_path = to_relative_path(Path(thumbnail_path_str))
 
@@ -2096,17 +2111,17 @@ async def scan_external_folder(
 
     await db.commit()
 
-    # Spawn STL thumbnail backfill in the background — the scan endpoint
+    # Spawn STL/PDF thumbnail backfill in the background — the scan endpoint
     # returns immediately so the FE modal closes and subdirectories are
     # visible right away; thumbnails fill in over the following seconds /
-    # minutes as the task processes each STL file. Survives FE refresh —
+    # minutes as the task processes each file. Survives FE refresh —
     # the task lives in the FastAPI event loop, not the request scope.
     # folder_cache.values() covers the root + every pre-existing subfolder
     # + every subfolder created during this scan. all_folder_ids on its own
     # would miss the newly-created ones (it's snapshotted before the walk).
     spawn_background_task(
-        _backfill_external_stl_thumbnails(list(set(folder_cache.values()))),
-        name=f"stl-backfill-folder-{folder_id}",
+        _backfill_external_thumbnails(list(set(folder_cache.values()))),
+        name=f"thumbnail-backfill-folder-{folder_id}",
     )
 
     return {"status": "success", "added": added, "removed": removed}
@@ -2762,12 +2777,20 @@ async def extract_zip_file(
 async def batch_generate_stl_thumbnails(
     request: BatchThumbnailRequest,
     db: AsyncSession = Depends(get_db),
-    _: User | None = Depends(require_permission_if_auth_enabled(Permission.LIBRARY_UPDATE_ALL)),
+    auth_result: tuple[User | None, bool] = Depends(
+        require_ownership_permission(
+            Permission.LIBRARY_UPDATE_ALL,
+            Permission.LIBRARY_UPDATE_OWN,
+        )
+    ),
 ):
     """Generate thumbnails for STL and PDF files in batch.
 
-    Note: Requires library:update_all permission since this is a batch operation
-    that may affect files owned by different users.
+    With library:update_all this covers every matching file; with only
+    library:update_own it is narrowed to the caller's own files, the same
+    rule as update_file. The File Manager offers the toolbar button and the
+    per-file "Generate Thumbnail" entry to update_own users, and both land
+    here.
 
     PDFs are included so the ones added before server-side PDF thumbnails
     existed can be backfilled without opening each preview. The route keeps
@@ -2783,6 +2806,10 @@ async def batch_generate_stl_thumbnails(
 
     # Build query based on request
     query = LibraryFile.active().where(LibraryFile.file_type.in_(("stl", "pdf")))
+
+    user, can_modify_all = auth_result
+    if not can_modify_all:
+        query = query.where(LibraryFile.created_by_id == user.id)
 
     if request.file_ids:
         # Specific files
@@ -2891,6 +2918,90 @@ def is_sliced_file(filename: str) -> bool:
     """
     lower = filename.lower()
     return lower.endswith(".gcode") or ".gcode." in lower
+
+
+@router.post("/files/combine", response_model=FileUploadResponse)
+async def combine_files(
+    request: CombineFilesRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User | None = Depends(require_permission_if_auth_enabled(Permission.LIBRARY_UPLOAD)),
+):
+    """Combine STL library files into one multi-object 3MF.
+
+    The slicer sidecar takes one model per slice, so putting several separate
+    STLs (or several copies of one, #2999) on one plate means building that
+    file first. The result is a new library file that slices like any other
+    3MF; with auto-arrange on, the slicer lays the objects out on the bed.
+    The sources are left untouched.
+    """
+    from backend.app.services.mesh_combine import CombinePart, MeshCombineError, combine_parts_to_3mf
+
+    filename = request.filename.strip()
+    if not filename.lower().endswith(".3mf"):
+        filename = f"{filename}.3mf"
+    try:
+        validate_print_filename(filename)
+    except InvalidFilenameError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    if request.folder_id is not None:
+        folder = (
+            await db.execute(select(LibraryFolder).where(LibraryFolder.id == request.folder_id))
+        ).scalar_one_or_none()
+        if folder is None:
+            raise HTTPException(status_code=404, detail="Folder not found")
+
+    # Same per-row visibility the slice route applies: a READ_OWN caller must
+    # not be able to pull another user's model into their own file by raw id.
+    can_read_all = current_user is None or current_user.has_permission(Permission.LIBRARY_READ_ALL.value)
+
+    # The same file listed twice is one object with the copies added up, so
+    # its mesh is loaded and stored once. Order follows first appearance.
+    copies_by_id: dict[int, int] = {}
+    for item in request.items:
+        copies_by_id[item.file_id] = copies_by_id.get(item.file_id, 0) + item.copies
+
+    rows = (await db.execute(LibraryFile.active().where(LibraryFile.id.in_(copies_by_id)))).scalars().all()
+    by_id = {row.id: row for row in rows}
+
+    # Gate every source before touching any of them on disk, so the answer for
+    # a file the caller can't see is the same 404 whatever else is in the list.
+    sources = [_ensure_library_file_visible(by_id.get(file_id), current_user, can_read_all) for file_id in copies_by_id]
+
+    parts: list[CombinePart] = []
+    for lib_file in sources:
+        if not lib_file.filename.lower().endswith(".stl"):
+            raise HTTPException(status_code=400, detail=f"Only STL files can be combined: {lib_file.filename}")
+        src_path = _resolve_source_disk_path(lib_file)
+        if src_path is None or not src_path.exists():
+            raise HTTPException(status_code=404, detail=f"Source file missing on disk: {lib_file.filename}")
+        parts.append(CombinePart(name=lib_file.filename, path=src_path, copies=copies_by_id[lib_file.id]))
+
+    try:
+        content = await asyncio.to_thread(combine_parts_to_3mf, parts)
+    except MeshCombineError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    # The preview is embedded as Metadata/thumbnail.png by combine_parts_to_3mf,
+    # so ThreeMFParser picks it up here like any other 3MF's thumbnail. Loading
+    # the combined file back to render one would expand every copy.
+    library_file, _ = await save_3mf_bytes_to_library(
+        db,
+        file_bytes=content,
+        filename=filename,
+        folder_id=request.folder_id,
+        source_type="combined",
+        owner_id=current_user.id if current_user else None,
+    )
+
+    return FileUploadResponse(
+        id=library_file.id,
+        filename=library_file.filename,
+        file_type=library_file.file_type,
+        file_size=library_file.file_size,
+        thumbnail_path=library_file.thumbnail_path,
+        metadata=library_file.file_metadata,
+    )
 
 
 @router.post("/files/add-to-queue", response_model=AddToQueueResponse)
@@ -5421,9 +5532,11 @@ async def upload_preview_thumbnail(
 
     STEP, PDF and spreadsheet previews are rendered in the browser; the FE
     posts its first render here so the grid gets a thumbnail without the
-    server needing OpenCascade or a PDF rasteriser. Only file types in
-    ``CLIENT_THUMBNAIL_TYPES`` are accepted, and only while the file has no
-    thumbnail yet — a stored thumbnail is never replaced by this route.
+    server needing OpenCascade. A PDF normally has its PDFium thumbnail from
+    upload already, so for PDFs this only fills the gap for a file PDFium
+    could not read. Only file types in ``CLIENT_THUMBNAIL_TYPES`` are
+    accepted, and only while the file has no thumbnail yet — a stored
+    thumbnail is never replaced by this route.
     """
     user, can_modify_all = auth_result
 
@@ -5455,26 +5568,48 @@ async def upload_preview_thumbnail(
     from PIL import Image, UnidentifiedImageError
 
     try:
-        with Image.open(io.BytesIO(content)) as img:
-            img.load()
-            if img.format != "PNG":
+        # Image.open() reads the header only. Both checks below happen before
+        # load(), so a declared-but-never-delivered canvas is refused rather
+        # than allocated. DecompressionBombError derives straight from
+        # Exception, so it has to be named explicitly — open() itself raises
+        # it once the declared size passes PIL's own limit.
+        with Image.open(io.BytesIO(content)) as source:
+            if source.format != "PNG":
                 raise HTTPException(status_code=400, detail="Thumbnail must be a PNG image")
-            if img.mode not in ("RGB", "RGBA"):
-                img = img.convert("RGBA")
-            # The grid renders at ~256px; cap outliers instead of storing them.
-            if img.width > 512 or img.height > 512:
-                img.thumbnail((512, 512), Image.Resampling.LANCZOS)
-            thumbnails_dir = get_library_thumbnails_dir()
-            thumb_filename = f"{uuid.uuid4().hex}.png"
-            thumb_path = thumbnails_dir / thumb_filename  # SEC-PATH-OK: thumb_filename = uuid.uuid4().hex + ".png"
-            img.save(thumb_path, "PNG", optimize=True)
+            if max(source.size) > MAX_CLIENT_THUMBNAIL_EDGE:
+                raise HTTPException(status_code=400, detail="Thumbnail image dimensions too large")
+            source.load()
+            img = source.convert("RGBA") if source.mode not in ("RGB", "RGBA") else source.copy()
     except HTTPException:
         raise
-    except (UnidentifiedImageError, OSError, ValueError) as e:
+    except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError) as e:
         raise HTTPException(status_code=400, detail="Invalid thumbnail image") from e
 
-    file.thumbnail_path = to_relative_path(thumb_path)
+    if max(img.size) > STORED_CLIENT_THUMBNAIL_EDGE:
+        img.thumbnail((STORED_CLIENT_THUMBNAIL_EDGE, STORED_CLIENT_THUMBNAIL_EDGE), Image.Resampling.LANCZOS)
+
+    thumbnails_dir = get_library_thumbnails_dir()
+    thumb_filename = f"{uuid.uuid4().hex}.png"
+    thumb_path = thumbnails_dir / thumb_filename  # SEC-PATH-OK: thumb_filename = uuid.uuid4().hex + ".png"
+    # Outside the decode guard on purpose: a full disk or an unwritable
+    # thumbnail directory is ours, not "Invalid thumbnail image".
+    try:
+        img.save(thumb_path, "PNG", optimize=True)
+    except OSError as e:
+        logger.error("Failed to store preview thumbnail for file %s: %s", file_id, e)
+        raise HTTPException(status_code=500, detail="Failed to store thumbnail") from e
+
+    # Two previews of the same file can reach this point together; the loser
+    # of the UPDATE takes its PNG back off disk instead of orphaning it.
+    result = await db.execute(
+        update(LibraryFile)
+        .where(LibraryFile.id == file_id, LibraryFile.thumbnail_path.is_(None))
+        .values(thumbnail_path=to_relative_path(thumb_path))
+    )
     await db.commit()
+    if result.rowcount == 0:
+        thumb_path.unlink(missing_ok=True)
+        return ClientThumbnailResponse(updated=False)
 
     return ClientThumbnailResponse(updated=True)
 
