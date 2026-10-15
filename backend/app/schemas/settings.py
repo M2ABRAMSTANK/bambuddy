@@ -647,7 +647,7 @@ class AppSettings(BaseModel):
         default="",
         description=(
             "OpenAI-compatible base URL for the bed-check vision model, e.g. "
-            "http://192.168.1.20:11434/v1 (local Ollama) or https://api.openai.com/v1"
+            "http://192.168.1.20:11434/v1 (local Ollama)"
         ),
     )
     bedcheck_ai_model: str = Field(

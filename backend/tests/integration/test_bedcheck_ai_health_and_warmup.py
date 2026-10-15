@@ -1,17 +1,19 @@
-"""Integration tests for:
-
-- GET /api/v1/bedcheck-ai/health (item 1's health-registry route).
-- The settings-save warmup hook (item 3's warmup(), fired from
-  routes/settings.py's update_settings() when bedcheck_ai connection settings
-  change -- see the review-response notes there for why this hook was chosen
-  over firing warmup() off a successful POST /bedcheck-ai/test-connection).
-"""
+"""Health reset and settings autosave behavior for AI bed checks."""
 
 import asyncio
 from unittest.mock import AsyncMock
 
 import pytest
 from httpx import AsyncClient
+
+
+@pytest.fixture(autouse=True)
+def reset_health_registry():
+    from backend.app.services import bedcheck_ai
+
+    bedcheck_ai.reset_health_state()
+    yield
+    bedcheck_ai.reset_health_state()
 
 
 class TestBedcheckAiHealthRoute:
@@ -45,7 +47,7 @@ class TestBedcheckAiHealthRoute:
 class TestBedcheckAiSettingsWarmupHook:
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_saving_bedcheck_ai_api_key_triggers_warmup(self, async_client: AsyncClient, monkeypatch):
+    async def test_saving_bedcheck_ai_api_key_does_not_trigger_warmup(self, async_client: AsyncClient, monkeypatch):
         from backend.app.services import bedcheck_ai
 
         warmup_mock = AsyncMock()
@@ -59,11 +61,11 @@ class TestBedcheckAiSettingsWarmupHook:
         # assert on it.
         for _ in range(5):
             await asyncio.sleep(0)
-        warmup_mock.assert_awaited_once()
+        warmup_mock.assert_not_awaited()
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_saving_bedcheck_backend_ai_triggers_warmup(self, async_client: AsyncClient, monkeypatch):
+    async def test_saving_bedcheck_backend_ai_does_not_trigger_warmup(self, async_client: AsyncClient, monkeypatch):
         from backend.app.services import bedcheck_ai
 
         warmup_mock = AsyncMock()
@@ -73,7 +75,7 @@ class TestBedcheckAiSettingsWarmupHook:
         assert response.status_code == 200
         for _ in range(5):
             await asyncio.sleep(0)
-        warmup_mock.assert_awaited_once()
+        warmup_mock.assert_not_awaited()
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -132,9 +134,8 @@ class TestBedcheckAiSettingsWarmupHook:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_changing_the_model_still_triggers_warmup(self, async_client: AsyncClient, monkeypatch):
-        """The other half of the same rule: a real change must still warm, or
-        the debounce optimisation would have disabled the hook outright."""
+    async def test_changing_the_model_does_not_trigger_warmup(self, async_client: AsyncClient, monkeypatch):
+        """Typing a model name must not send requests on autosave pauses."""
         from backend.app.services import bedcheck_ai
 
         await async_client.put("/api/v1/settings/", json={"bedcheck_ai_model": "qwen2.5vl:7b"})
@@ -146,7 +147,7 @@ class TestBedcheckAiSettingsWarmupHook:
         assert response.status_code == 200
         for _ in range(5):
             await asyncio.sleep(0)
-        warmup_mock.assert_awaited_once()
+        warmup_mock.assert_not_awaited()
 
 
 class TestBedcheckAiSettingsHealthReset:
@@ -230,3 +231,124 @@ class TestBedcheckAiSettingsHealthReset:
         finally:
             bedcheck_ai._last_outcome.pop(81, None)
             bedcheck_ai._last_unavailable_notified_at.pop(81, None)
+
+
+@pytest.mark.asyncio
+async def test_discovered_shape_survives_cache_loss(async_client, monkeypatch):
+    import json
+
+    import httpx
+    from sqlalchemy import select
+
+    from backend.app.models.settings import Settings
+    from backend.app.services import bedcheck_ai
+
+    bedcheck_ai._shape_cache.clear()
+    url = "http://192.168.1.20:11434/v1"
+    cfg = {"bedcheck_ai_base_url": url, "bedcheck_ai_model": "local-model", "bedcheck_ai_api_key": "secret"}
+    assert (await async_client.put("/api/v1/settings/", json=cfg)).status_code == 200
+    shapes = []
+
+    async def post(base_url, model, api_key, messages, timeout, shape):
+        shapes.append(dict(shape))
+        if shape["token_param"] == "max_tokens" or shape["response_mode"] == "json_schema":
+            param = "max_tokens" if shape["token_param"] == "max_tokens" else "response_format"
+            request = httpx.Request("POST", url + "/chat/completions")
+            response = httpx.Response(400, request=request, json={"error": {"param": param}})
+            raise httpx.HTTPStatusError("unsupported", request=request, response=response)
+        return json.dumps({"is_empty": True, "confidence": 0.9, "reason": "bare"})
+
+    monkeypatch.setattr(bedcheck_ai, "_post_chat", post)
+    try:
+        response = await async_client.post(
+            "/api/v1/bedcheck-ai/test-connection", json={"base_url": url + "/", "model": " local-model "}
+        )
+        assert response.json()["ok"] is True
+        assert len(shapes) == 3
+        async with bedcheck_ai.async_session() as db:
+            rows = (await db.execute(select(Settings).where(Settings.key.like("bedcheck_ai_shape_%")))).scalars().all()
+            assert len(rows) == 1
+            assert "secret" not in rows[0].key + rows[0].value
+
+        bedcheck_ai._shape_cache.clear()  # A new process has no cached entries.
+        loaded = await bedcheck_ai.load_ai_settings()
+        restored = bedcheck_ai._get_shape(**loaded)
+        assert restored == {"token_param": "max_completion_tokens", "response_mode": "json_object"}
+        result = await bedcheck_ai.check_bed_ai(42, bedcheck_ai._synthetic_test_frame(), "chamber")
+        assert result.outcome == "degraded"
+        assert shapes[-1] == restored
+
+        # A key rotation must not inherit a different credential's discovery.
+        bedcheck_ai._shape_cache.clear()
+        await async_client.put("/api/v1/settings/", json={"bedcheck_ai_api_key": "rotated"})
+        loaded = await bedcheck_ai.load_ai_settings()
+        assert bedcheck_ai._get_shape(**loaded) == bedcheck_ai._DEFAULT_SHAPE
+    finally:
+        bedcheck_ai._shape_cache.clear()
+        bedcheck_ai.reset_health_state()
+
+
+@pytest.mark.asyncio
+async def test_printer_override_change_resets_only_its_health(async_client, db_session):
+    from backend.app.models.printer import Printer
+    from backend.app.services import bedcheck_ai
+
+    printer = Printer(
+        name="Test",
+        serial_number="REVIEWTEST",
+        ip_address="192.168.1.10",
+        access_code="12345678",
+        bedcheck_backend_override="ai",
+        is_active=False,
+    )
+    db_session.add(printer)
+    await db_session.commit()
+    await db_session.refresh(printer)
+    bedcheck_ai._record_outcome(printer.id, "unavailable", "timeout", "json_schema")
+    bedcheck_ai._last_unavailable_notified_at[printer.id] = 1.0
+    bedcheck_ai._record_outcome(999, "ok", None, "json_schema")
+    try:
+        response = await async_client.patch(
+            f"/api/v1/printers/{printer.id}", json={"bedcheck_backend_override": "opencv"}
+        )
+        assert response.status_code == 200
+        assert printer.id not in bedcheck_ai.get_health()
+        assert printer.id not in bedcheck_ai._last_unavailable_notified_at
+        assert bedcheck_ai.get_health()[999]["outcome"] == "ok"
+    finally:
+        bedcheck_ai.reset_health_state()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_discovery_saves_share_one_persisted_row(tmp_path, monkeypatch):
+    import json
+
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from backend.app.models.settings import Settings
+    from backend.app.services import bedcheck_ai
+
+    # A file-backed disposable DB gives concurrent sessions independent
+    # connections, matching production SQLite rather than a shared in-memory one.
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'discovery.db'}")
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    monkeypatch.setattr(bedcheck_ai, "async_session", sessions)
+    key = bedcheck_ai._shape_cache_key("http://192.168.1.20/v1", "local-model", "key")
+    shape = {"token_param": "max_completion_tokens", "response_mode": "json_object"}
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(Settings.__table__.create)
+        await asyncio.gather(*(bedcheck_ai._save_shape(key, shape) for _ in range(10)))
+        async with sessions() as db:
+            rows = (await db.execute(select(Settings))).scalars().all()
+            assert len(rows) == 1
+            assert json.loads(rows[0].value) == shape
+
+        await bedcheck_ai._save_shape(key, bedcheck_ai._DEFAULT_SHAPE)
+        async with sessions() as db:
+            rows = (await db.execute(select(Settings))).scalars().all()
+            assert len(rows) == 1
+            assert json.loads(rows[0].value) == bedcheck_ai._DEFAULT_SHAPE
+    finally:
+        await engine.dispose()

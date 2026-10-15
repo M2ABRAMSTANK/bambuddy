@@ -927,6 +927,7 @@ async def _collect_support_info() -> dict:
                     "has_vt_tray": has_vt_tray,
                     "external_camera_configured": bool(printer.external_camera_url),
                     "plate_detection_enabled": printer.plate_detection_enabled,
+                    "bedcheck_backend_override": printer.bedcheck_backend_override,
                     "obico_enabled": obico_globally_enabled
                     and (obico_enabled_set is None or printer.id in obico_enabled_set),
                     "hms_error_count": len(state.hms_errors) if state else 0,

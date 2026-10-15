@@ -40,12 +40,14 @@ from backend.app.services.bedcheck_ai import (
 
 
 @pytest.fixture(autouse=True)
-def _reset_bedcheck_ai_module_state():
+def _reset_bedcheck_ai_module_state(monkeypatch):
     """_last_outcome / _shape_cache / _last_unavailable_notified_at are
     module-level globals that persist across tests in the same process --
     reset them before and after every test so outcome-transition, shape-cache,
     and health-registry behavior is never order-dependent on what other tests
     in this file ran first."""
+    monkeypatch.setattr(bedcheck_ai_module, "_restore_shape", AsyncMock())
+    monkeypatch.setattr(bedcheck_ai_module, "_save_shape", AsyncMock())
     bedcheck_ai_module._last_outcome.clear()
     bedcheck_ai_module._shape_cache.clear()
     bedcheck_ai_module._last_unavailable_notified_at.clear()
@@ -384,7 +386,7 @@ class TestFailOpenPerErrorClass:
         # Even a failed AI check must self-identify as the AI backend so the
         # decision-matrix UI attributes the fail-open verdict correctly.
         assert result.backend == "ai"
-        assert result.ai_reason is None
+        assert result.ai_reason == expected_message.split("AI bed-check unavailable: ", 1)[1]
         assert result.outcome == "unavailable"
 
     @pytest.mark.asyncio
@@ -1724,3 +1726,38 @@ class TestDispatchWithNoRunningLoop:
             bedcheck_ai_module._dispatch_unavailable_transition(99, "ok", "connection failed")
 
         fake_coro.close.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_json_object_fallback_supplies_verdict_contract_without_mutating_messages():
+    import json
+
+    messages = [
+        {"role": "system", "content": bedcheck_ai_module.SYSTEM_PROMPT},
+        {"role": "user", "content": "Inspect the plate."},
+    ]
+
+    async def respond_to_contract(*args, **kwargs):
+        payload = kwargs["json"]
+        assert payload["response_format"] == {"type": "json_object"}
+        system_text = " ".join(m["content"] for m in payload["messages"] if m["role"] == "system")
+        assert json.dumps(bedcheck_ai_module.VERDICT_JSON_SCHEMA["schema"]) in system_text
+        return _mock_200_response(
+            {"choices": [{"message": {"content": json.dumps({"is_empty": True, "confidence": 0.9, "reason": "bare"})}}]}
+        )
+
+    client = _mock_client(post_side_effect=respond_to_contract)
+    with patch("backend.app.services.bedcheck_ai.httpx.AsyncClient", return_value=client):
+        raw = await _post_chat(
+            CONFIGURED_URL, "model", "", messages, shape={"token_param": "max_tokens", "response_mode": "json_object"}
+        )
+    assert _parse_verdict_json(raw)["is_empty"] is True
+    assert len(messages) == 2
+    assert messages[0]["content"] == bedcheck_ai_module.SYSTEM_PROMPT
+
+
+def test_unavailable_result_exposes_safe_reason_to_modal():
+    with patch("backend.app.services.bedcheck_ai._dispatch_unavailable_transition"):
+        result = bedcheck_ai_module.unavailable_result(1, "chamber", "connection timed out")
+    assert result.ai_reason == "connection timed out"
+    assert result.outcome == "unavailable"

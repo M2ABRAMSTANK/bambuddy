@@ -24,6 +24,7 @@ from PIL import Image, UnidentifiedImageError
 from sqlalchemy import select
 
 from backend.app.core.database import async_session
+from backend.app.core.db_dialect import upsert_setting
 from backend.app.models.settings import Settings
 from backend.app.services.plate_detection import PlateDetectionResult
 
@@ -112,8 +113,8 @@ USER_PROMPT_INTRO_NO_REFS = (
 # Default chat/completions request shape -- max_tokens + a json_schema
 # response_format. Some OpenAI-compatible backends (notably certain reasoning
 # models) reject one or both of these; test_connection() discovers the
-# working shape for a given (base_url, model, api_key) and caches it here so
-# the print/manual paths never have to probe (see _post_chat + item 4 in the
+# working shape for a given (base_url, model, api_key) and persists it in
+# Settings, with an in-memory cache, so print/manual paths never have to probe (see _post_chat + item 4 in the
 # module's PR review response).
 _DEFAULT_SHAPE = {"token_param": "max_tokens", "response_mode": "json_schema"}
 
@@ -158,6 +159,44 @@ def _get_shape(base_url: str, model: str, api_key: str) -> dict:
     return _shape_cache.get(_shape_cache_key(base_url, model, api_key), _DEFAULT_SHAPE)
 
 
+def _shape_setting_key(cache_key: tuple[str, str, str]) -> str:
+    # The digest keeps the settings key bounded and excludes credentials/URLs.
+    digest = hashlib.sha256(json.dumps(cache_key).encode("utf-8")).hexdigest()
+    return f"bedcheck_ai_shape_{digest}"
+
+
+async def _restore_shape(base_url: str, model: str, api_key: str) -> None:
+    cache_key = _shape_cache_key(base_url, model, api_key)
+    if cache_key in _shape_cache:
+        return
+    async with async_session() as db:
+        row = (
+            await db.execute(select(Settings).where(Settings.key == _shape_setting_key(cache_key)))
+        ).scalar_one_or_none()
+        if row is None:
+            return
+        try:
+            shape = json.loads(row.value)
+        except (ValueError, TypeError):
+            return
+    # Only accept the two supported dimensions, never arbitrary payload keys.
+    if (
+        isinstance(shape, dict)
+        and set(shape) == set(_DEFAULT_SHAPE)
+        and shape["token_param"] in ("max_tokens", "max_completion_tokens")
+        and shape["response_mode"] in ("json_schema", "json_object")
+    ):
+        _shape_cache[cache_key] = shape
+
+
+async def _save_shape(cache_key: tuple[str, str, str], shape: dict) -> None:
+    async with async_session() as db:
+        # Multiple tabs or API callers may discover the same identity at once.
+        # Use the shared SQLite/PostgreSQL upsert to avoid a first-insert race.
+        await upsert_setting(db, Settings, _shape_setting_key(cache_key), json.dumps(shape))
+        await db.commit()
+
+
 def get_health() -> dict[int, dict]:
     """Public accessor for the per-printer health snapshot -- routes/bedcheck_ai.py's
     GET /health reads this.
@@ -170,17 +209,23 @@ def get_health() -> dict[int, dict]:
     return {printer_id: dict(entry) for printer_id, entry in _last_outcome.items()}
 
 
-def reset_health_state() -> None:
-    """Drop every per-printer health entry and its notification rate-limit
-    state. Called from routes/settings.py when the AI bed-check connection
+def reset_health_state(printer_id: int | None = None) -> None:
+    """Drop one printer's health/cooldown, or all entries when no ID is given.
+
+    Called from routes/printers.py when an override changes, and from
+    routes/settings.py when the AI bed-check connection
     settings actually change: the recorded outcomes describe the *old*
     backend, so leaving them in place would show a stale "unavailable" badge
     for a URL that is no longer configured, and -- worse -- leave
     _last_unavailable_notified_at armed, suppressing the first genuine
     failure notification from the new backend for up to an hour.
     """
-    _last_outcome.clear()
-    _last_unavailable_notified_at.clear()
+    if printer_id is None:
+        _last_outcome.clear()
+        _last_unavailable_notified_at.clear()
+    else:
+        _last_outcome.pop(printer_id, None)
+        _last_unavailable_notified_at.pop(printer_id, None)
 
 
 def _record_outcome(printer_id: int, outcome: str, reason: str | None, request_mode: str) -> None:
@@ -340,6 +385,15 @@ async def _post_chat(
     """
     if shape is None:
         shape = _get_shape(base_url, model, api_key)
+    if shape["response_mode"] == "json_object":
+        # JSON-object mode has no schema in response_format. Give the model
+        # the same contract explicitly, without mutating messages on retries.
+        messages = [dict(message) for message in messages]
+        schema_prompt = "Return JSON matching this schema: " + json.dumps(VERDICT_JSON_SCHEMA["schema"])
+        if messages and messages[0].get("role") == "system":
+            messages[0]["content"] += "\n" + schema_prompt
+        else:
+            messages.insert(0, {"role": "system", "content": schema_prompt})
     payload = {
         "model": model,
         "temperature": 0,
@@ -348,10 +402,6 @@ async def _post_chat(
         "response_format": (
             {"type": "json_schema", "json_schema": VERDICT_JSON_SCHEMA}
             if shape["response_mode"] == "json_schema"
-            # SYSTEM_PROMPT already demands "nothing but the JSON object" and
-            # spells out the exact schema in prose -- that satisfies OpenAI's
-            # json_object-mode rule that the prompt must mention JSON, so no
-            # separate schema text needs to be injected here.
             else {"type": "json_object"}
         ),
     }
@@ -410,11 +460,14 @@ async def _load_ai_settings() -> dict:
         result = await db.execute(select(Settings).where(Settings.key.in_(keys)))
         rows = {r.key: r.value for r in result.scalars().all()}
 
-    return {
+    cfg = {
         "base_url": (rows.get("bedcheck_ai_base_url") or "").strip().rstrip("/"),
         "model": (rows.get("bedcheck_ai_model") or "").strip(),
         "api_key": (rows.get("bedcheck_ai_api_key") or "").strip(),
     }
+
+    await _restore_shape(**cfg)
+    return cfg
 
 
 async def load_ai_settings() -> dict:
@@ -746,6 +799,7 @@ def unavailable_result(
         ai_confidence=None,
         needs_calibration=False,
         message=f"[{camera_source}] AI bed-check unavailable: {reason}",
+        ai_reason=reason,
         backend="ai",
         outcome="unavailable",
     )
@@ -851,7 +905,7 @@ async def test_connection(base_url: str, model: str, api_key: str = "") -> dict:
     this retries once with the adjusted shape (_adjust_shape()). At most one
     retry per dimension (token_param, response_mode) -- so at most 3 requests
     total. On overall success the shape actually used is written into
-    _shape_cache, unconditionally -- this doubles as the recovery path for a
+    Settings and _shape_cache, unconditionally -- this doubles as the recovery path for a
     stale "degraded" cache entry from a backend that has since been fixed.
     """
     from backend.app.api.routes._url_safety import assert_safe_lan_service_url
@@ -866,9 +920,10 @@ async def test_connection(base_url: str, model: str, api_key: str = "") -> dict:
 
     start = time.monotonic()
     cache_key = _shape_cache_key(base_url, model, api_key)
-    shape = dict(_shape_cache.get(cache_key, _DEFAULT_SHAPE))
     retried_dimensions: set[str] = set()
     try:
+        await _restore_shape(base_url, model, api_key)
+        shape = dict(_get_shape(base_url, model, api_key))
         image_data = _synthetic_test_frame()
         messages = _build_messages(image_data)
         while True:
@@ -881,6 +936,7 @@ async def test_connection(base_url: str, model: str, api_key: str = "") -> dict:
                 )
                 raw = await _post_chat(base_url, model, api_key, messages, timeout=request_timeout, shape=shape)
                 data = _parse_verdict_json(raw)
+                await _save_shape(cache_key, shape)
                 break
             except httpx.HTTPStatusError as e:
                 if e.response.status_code not in (400, 422):

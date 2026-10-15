@@ -1,4 +1,3 @@
-import asyncio
 import io
 import logging
 import os
@@ -31,10 +30,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/settings", tags=["settings"])
 
 DEFAULT_SETTINGS = AppSettings()
-
-# Strong references to in-flight bedcheck-AI warmup tasks (see
-# update_settings). Entries are discarded as each task completes.
-_bedcheck_ai_warmup_tasks: set[asyncio.Task] = set()
 
 
 def _setting_str(value: object) -> str:
@@ -368,20 +363,7 @@ async def update_settings(
     }
     mqtt_updated = bool(mqtt_keys & set(update_data.keys()))
 
-    # AI bed-check connection settings changing -- warm the model into VRAM
-    # ahead of the next print-start deadline-bounded check (see
-    # services/bedcheck_ai.py PRINT_START_DEADLINE_SECONDS / warmup()) rather
-    # than let a cold-start eat into that budget. Hooked here (mirroring
-    # mqtt_updated above), not off a successful POST /bedcheck-ai/test-connection:
-    # that endpoint can probe an unsaved candidate URL/model/key, but
-    # warmup() re-reads the *saved* settings from the DB, so firing it there
-    # risks warming the wrong target. This endpoint already handles every
-    # setting in the app, so the check is scoped to the 4 bedcheck keys only.
-    # The settings UI auto-saves the whole bedcheck block on a debounce, so
-    # *presence* of a key in the payload says nothing about whether anything
-    # changed -- warming on presence alone fires a full vision-model request
-    # on every keystroke-debounce. Compare the stored value against the
-    # incoming one and act only on a real change.
+    # Reset recorded health only when the saved backend configuration changes.
     bedcheck_ai_conn_keys = ("bedcheck_ai_base_url", "bedcheck_ai_model", "bedcheck_ai_api_key")
     bedcheck_ai_changed: set[str] = set()
     for key in (*bedcheck_ai_conn_keys, "bedcheck_backend"):
@@ -389,12 +371,6 @@ async def update_settings(
             continue
         if await get_setting(db, key) != _setting_str(update_data[key]):
             bedcheck_ai_changed.add(key)
-    # Backend flipping to opencv is a real change (the health registry must be
-    # dropped) but not a reason to warm a model nobody is about to call.
-    bedcheck_ai_warmup_needed = bool(bedcheck_ai_changed & set(bedcheck_ai_conn_keys)) or (
-        "bedcheck_backend" in bedcheck_ai_changed and update_data.get("bedcheck_backend") == "ai"
-    )
-
     for key, value in update_data.items():
         await set_setting(db, key, _setting_str(value))
 
@@ -432,21 +408,6 @@ async def update_settings(
             reset_health_state()
         except Exception:
             pass  # Health display only; never fail the settings update over it
-
-    if bedcheck_ai_warmup_needed:
-        try:
-            import asyncio
-
-            from backend.app.services import bedcheck_ai as bedcheck_ai_module
-
-            # Held in a module-level set (discarded on completion): asyncio
-            # keeps only a weak reference to a running task, so a create_task
-            # result nobody retains can be collected mid-flight.
-            task = asyncio.create_task(bedcheck_ai_module.warmup())
-            _bedcheck_ai_warmup_tasks.add(task)
-            task.add_done_callback(_bedcheck_ai_warmup_tasks.discard)
-        except Exception:
-            pass  # Fire-and-forget priming only; never fail the settings update over it
 
     # Return updated settings (never scrub secrets on PUT — caller has SETTINGS_UPDATE permission)
     return await _build_settings_response(db, is_api_key=False)

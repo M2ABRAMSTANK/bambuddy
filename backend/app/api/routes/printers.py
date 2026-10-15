@@ -385,6 +385,11 @@ async def update_printer(
 
     update_data = printer_data.model_dump(exclude_unset=True)
 
+    backend_changed = (
+        "bedcheck_backend_override" in update_data
+        and update_data["bedcheck_backend_override"] != printer.bedcheck_backend_override
+    )
+
     # Handle nested ROI object - flatten to individual columns
     if "plate_detection_roi" in update_data:
         roi = update_data.pop("plate_detection_roi")
@@ -405,6 +410,10 @@ async def update_printer(
 
     await db.commit()
     await db.refresh(printer)
+    if backend_changed:
+        from backend.app.services.bedcheck_ai import reset_health_state
+
+        reset_health_state(printer_id)
 
     # Reconnect if connection settings changed
     if any(k in update_data for k in ["ip_address", "access_code", "is_active"]):
